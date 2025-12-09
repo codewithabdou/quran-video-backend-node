@@ -4,6 +4,9 @@ import dotenv from 'dotenv';
 import apiRoutes from './routes/api.js';
 import fs from 'fs';
 import path from 'path';
+import swaggerUi from 'swagger-ui-express';
+import swaggerJsdoc from 'swagger-jsdoc';
+import swaggerOptions from './config/swagger.js';
 
 dotenv.config();
 
@@ -20,6 +23,10 @@ if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
 if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
 
 app.use('/api/v1', apiRoutes);
+
+const specs = swaggerJsdoc(swaggerOptions);
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
+console.log(`Swagger Docs available at http://localhost:${PORT}/api-docs`);
 
 app.get('/', (req, res) => {
     res.json({ message: "Welcome to Quran Video Generator API (Node.js). Use POST /api/v1/generate-video" });
