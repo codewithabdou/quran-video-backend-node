@@ -1,39 +1,57 @@
 import fs from 'fs';
 import axios from 'axios';
 import path from 'path';
+import { retryHttpRequest, retryFileOperation } from './retry.js';
+import { FileOperationError, ExternalAPIError } from './errors.js';
 
 export const downloadFile = async (url, destination) => {
-    const writer = fs.createWriteStream(destination);
-
     try {
-        const response = await axios({
-            url,
-            method: 'GET',
-            responseType: 'stream'
-        });
+        // Use retry logic for the HTTP request
+        await retryHttpRequest(async () => {
+            const writer = fs.createWriteStream(destination);
 
-        response.data.pipe(writer);
+            try {
+                const response = await axios({
+                    url,
+                    method: 'GET',
+                    responseType: 'stream',
+                    timeout: 30000, // 30 second timeout
+                });
 
-        return new Promise((resolve, reject) => {
-            writer.on('finish', () => {
-                writer.close(); // Ensure it's closed
-                writer.destroy(); // Destroy stream to release resources
-                resolve(true);
-            });
-            writer.on('error', (err) => {
+                response.data.pipe(writer);
+
+                return new Promise((resolve, reject) => {
+                    writer.on('finish', () => {
+                        writer.close(); // Ensure it's closed
+                        writer.destroy(); // Destroy stream to release resources
+                        resolve(true);
+                    });
+                    writer.on('error', (err) => {
+                        writer.close();
+                        writer.destroy();
+                        fs.unlink(destination, () => { }); // Async unlink to avoid blocking
+                        reject(new FileOperationError('download', destination, err));
+                    });
+                });
+            } catch (error) {
                 writer.close();
-                writer.destroy();
-                fs.unlink(destination, () => { }); // Async unlink to avoid blocking
-                reject(err);
-            });
+                if (fs.existsSync(destination)) fs.unlinkSync(destination);
+                throw error;
+            }
+        }, {
+            maxRetries: 3,
+            onRetry: (attempt, maxRetries, error, delay) => {
+                console.log(`Download failed for ${url} (attempt ${attempt}/${maxRetries}). Retrying in ${delay}ms...`);
+            }
         });
+
+        return true;
     } catch (error) {
-        writer.close();
-        if (fs.existsSync(destination)) fs.unlinkSync(destination);
         console.error(`Error downloading file from ${url}:`, error.message);
-        return false;
+        throw new ExternalAPIError('File Download', error);
     }
 };
+
 
 export const cleanupTempDir = async (dir) => {
     if (!fs.existsSync(dir)) return;
