@@ -2,11 +2,11 @@ import rateLimit from 'express-rate-limit';
 
 /**
  * General API rate limiter
- * Limits: 100 requests per 15 minutes per IP
+ * Limits: 200 requests per 15 minutes per IP
  */
 export const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per windowMs
+    max: 200, // Limit each IP to 200 requests per windowMs
     message: {
         error: {
             message: 'Too many requests from this IP, please try again later.',
@@ -24,11 +24,11 @@ export const apiLimiter = rateLimit({
 
 /**
  * Strict rate limiter for video generation endpoint
- * Limits: 5 requests per hour per IP
+ * Limits: 10 requests per hour per IP
  */
 export const videoGenerationLimiter = rateLimit({
     windowMs: 60 * 60 * 1000, // 1 hour
-    max: 5, // Limit each IP to 5 video generations per hour
+    max: 10, // Limit each IP to 10 video generations per hour
     message: {
         error: {
             message: 'Too many video generation requests. Please try again later.',

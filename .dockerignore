@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Runtime Data
+temp/
+outputs/
+logs/
+*.log
+
+# Testing
+coverage/
+
+# Misc
+.DS_Store
+.vscode/
+Thumbs.db
+.git/
+.gitignore
+
+# Project Specific
+src/constants/pexels_videos_cache.json
+
+# Documentation
+README.md

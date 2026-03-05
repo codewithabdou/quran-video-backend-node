@@ -1,0 +1,40 @@
+services:
+  quran-backend:
+    # Option 1: Build locally
+    # build: .
+
+    # Option 2: Pull from GHCR (replace with your GitHub username)
+    image: ghcr.io/codewithabdou/quran-backend:latest
+
+    container_name: quran-backend
+    restart: unless-stopped
+
+    ports:
+      - "5000:5000"
+
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+      - ALLOWED_ORIGINS=https://your-frontend-domain.netlify.app
+      - TRUSTED_IPS=127.0.0.1,::1
+      - VAPID_PUBLIC_KEY=BIcIapCPcgUxx--VudL5XMd2KO9AG5EZ_0iaTjxUxVPikFTTZCqRAlJ-ZqNx6k9iNRcbKjh538sdM_65gNCMAys
+      - VAPID_PRIVATE_KEY=-2uWx0G-i8q9Ivu1P7h-URpV1hok_jKUqKQTR7zcCEI
+      - VAPID_EMAIL=mailto:khaledhabouche08@gmail.com
+      - PEXELS_API_KEY=d8FoyLQB0oEUkQJvPshVT1zEB0Xo9QVbsKbk6peyK8Fin2dmIjsQyqqq
+
+    volumes:
+      - backend-outputs:/app/outputs
+
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+    healthcheck:
+      test: [ "CMD", "node", "-e", "fetch('http://localhost:5000/').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  backend-outputs:
+    driver: local
