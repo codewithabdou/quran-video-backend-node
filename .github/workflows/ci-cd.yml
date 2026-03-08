@@ -1,90 +1,91 @@
 name: CI/CD Pipeline
 
 on:
-    push:
-        branches: [main]
-    pull_request:
-        branches: [main]
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 env:
-    REGISTRY: ghcr.io
-    IMAGE_NAME: ${{ github.repository_owner }}/quran-backend
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/quran-backend
 
 jobs:
-    # ──────────────────────────────────────────────
-    # Job 1: Run Tests
-    # ──────────────────────────────────────────────
-    test:
-        name: Run Tests
-        runs-on: ubuntu-latest
+  # ──────────────────────────────────────────────
+  # Job 1: Run Tests
+  # ──────────────────────────────────────────────
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
 
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-            - name: Setup Node.js
-              uses: actions/setup-node@v4
-              with:
-                  node-version: 20
-                  cache: npm
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
 
-            - name: Install dependencies
-              run: npm ci
+      - name: Install dependencies
+        run: npm ci
 
-            - name: Run tests
-              run: npm test
-              env:
-                  NODE_ENV: test
-                  PORT: 5000
-                  ALLOWED_ORIGINS: http://localhost:5173
-                  TRUSTED_IPS: 127.0.0.1,::1
-                  VAPID_PUBLIC_KEY: test-public-key
-                  VAPID_PRIVATE_KEY: test-private-key
-                  VAPID_EMAIL: mailto:test@test.com
-                  PEXELS_API_KEY: test-pexels-key
+      - name: Run tests
+        run: npm test
+        env:
+          NODE_ENV: test
+          PORT: 5000
+          ALLOWED_ORIGINS: http://localhost:5173
+          TRUSTED_IPS: 127.0.0.1,::1
+          VAPID_PUBLIC_KEY: test-public-key
+          VAPID_PRIVATE_KEY: test-private-key
+          VAPID_EMAIL: mailto:test@test.com
+          PEXELS_API_KEY: test-pexels-key
+          REDIS_URL: redis://localhost:6379
 
-    # ──────────────────────────────────────────────
-    # Job 2: Build & Push Docker Image
-    # ──────────────────────────────────────────────
-    build-and-push:
-        name: Build & Push Docker Image
-        runs-on: ubuntu-latest
-        needs: test
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  # ──────────────────────────────────────────────
+  # Job 2: Build & Push Docker Image
+  # ──────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
-        permissions:
-            contents: read
-            packages: write
+    permissions:
+      contents: read
+      packages: write
 
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-            - name: Log in to GitHub Container Registry
-              uses: docker/login-action@v3
-              with:
-                  registry: ${{ env.REGISTRY }}
-                  username: ${{ github.actor }}
-                  password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-            - name: Extract metadata for Docker
-              id: meta
-              uses: docker/metadata-action@v5
-              with:
-                  images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-                  tags: |
-                      type=raw,value=latest
-                      type=sha,prefix=
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=
 
-            - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-            - name: Build and push Docker image
-              uses: docker/build-push-action@v6
-              with:
-                  context: .
-                  push: true
-                  tags: ${{ steps.meta.outputs.tags }}
-                  labels: ${{ steps.meta.outputs.labels }}
-                  cache-from: type=gha
-                  cache-to: type=gha,mode=max
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

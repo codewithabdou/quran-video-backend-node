@@ -10,6 +10,10 @@ import swaggerOptions from './config/swagger.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { securityHeaders, configureCORS } from './middleware/security.js';
 import { apiLimiter } from './middleware/rateLimiter.js';
+import { closeConnections } from './config/queue.js';
+
+// Import worker (starts it as a side-effect)
+import worker from './worker.js';
 
 dotenv.config();
 
@@ -57,7 +61,39 @@ app.get('/', (req, res) => {
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`Redis URL: ${process.env.REDIS_URL || 'redis://localhost:6379'}`);
 });
+
+// Graceful shutdown
+const shutdown = async (signal) => {
+    console.log(`\n${signal} received. Shutting down gracefully...`);
+
+    // Close the HTTP server
+    server.close(() => {
+        console.log('HTTP server closed');
+    });
+
+    // Close the BullMQ worker
+    try {
+        await worker.close();
+        console.log('Worker closed');
+    } catch (err) {
+        console.error('Error closing worker:', err);
+    }
+
+    // Close Redis connections
+    try {
+        await closeConnections();
+        console.log('Redis connections closed');
+    } catch (err) {
+        console.error('Error closing Redis:', err);
+    }
+
+    process.exit(0);
+};
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

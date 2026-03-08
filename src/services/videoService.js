@@ -12,6 +12,8 @@ import { downloadFile, cleanupTempDir } from '../utils/fileOps.js';
 import { createSubtitleImage } from '../utils/textGen.js';
 import webPush from 'web-push';
 import dotenv from 'dotenv';
+import { videoQueue, getProgressData, setProgress, deleteProgress, getJobResult, getQueuePosition } from '../config/queue.js';
+
 dotenv.config();
 
 // Configure web-push
@@ -23,25 +25,36 @@ if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
     );
 }
 
-// Stores
+// Subscription store (kept in-memory — only used for push notifications)
 const subscriptionStore = new Map();
-const progressStore = new Map();
 
 export const subscribeToProgress = (requestId, subscription) => {
     subscriptionStore.set(requestId, subscription);
 };
 
+/**
+ * Get progress via SSE — reads from Redis instead of in-memory Map
+ */
 export const getProgress = (requestId, callback, req) => {
-    // Check store periodically
-    const interval = setInterval(() => {
-        const data = progressStore.get(requestId);
-        if (data) {
-            // Check if callback wants to handle writing
-            const shouldStop = callback(data, data.status === 'completed' || data.error);
-            if (data.status === 'completed' || data.error) {
-                clearInterval(interval);
-                progressStore.delete(requestId);
+    const interval = setInterval(async () => {
+        try {
+            const data = await getProgressData(requestId);
+            if (data) {
+                // Fetch queue position if still waiting
+                if (data.status === 'status_queued' || data.status === 'queued') {
+                    const pos = await getQueuePosition(requestId);
+                    if (pos > 0) {
+                        data.queuePosition = pos;
+                    }
+                }
+
+                callback(data, data.status === 'status_completed' || data.status === 'completed' || data.error);
+                if (data.status === 'status_completed' || data.status === 'completed' || data.error) {
+                    clearInterval(interval);
+                }
             }
+        } catch (err) {
+            console.error('Error reading progress from Redis:', err.message);
         }
     }, 500);
 
@@ -52,48 +65,60 @@ export const getProgress = (requestId, callback, req) => {
     }
 };
 
-export const generateVideo = async (data, requestId) => {
-    // Check duplicate
-    if (progressStore.has(requestId)) {
-        const current = progressStore.get(requestId);
-        if (current.status !== 'completed' && !current.error) {
-            return { status: 'already_processing' };
-        }
+/**
+ * Add a video generation job to the queue (non-blocking)
+ * Returns the job ID immediately
+ */
+export const enqueueVideoGeneration = async (requestData, requestId) => {
+    // Check if this request is already being processed
+    const existingProgress = await getProgressData(requestId);
+    if (existingProgress && existingProgress.status !== 'status_completed' && existingProgress.status !== 'completed' && !existingProgress.error) {
+        return { status: 'already_processing', jobId: requestId };
     }
 
-    progressStore.set(requestId, { status: "starting", percentage: 0 });
+    // Set initial progress
+    await setProgress(requestId, { status: 'status_queued', percentage: 0 });
 
-    const updateProgress = (p, msg) => {
-        progressStore.set(requestId, { status: msg, percentage: p });
-        if (msg === 'status_completed') {
-            // Notification logic
-            const subscription = subscriptionStore.get(requestId);
-            if (subscription) {
-                const payload = JSON.stringify({
-                    title: 'Video Generation Complete!',
-                    body: `Your Quran video is ready.`,
-                    icon: '/icon.png'
-                });
-                webPush.sendNotification(subscription, payload)
-                    .catch(err => console.error("Error sending notification:", err))
-                    .finally(() => subscriptionStore.delete(requestId));
-            }
-        }
-    };
+    // Add job to BullMQ queue
+    const job = await videoQueue.add(
+        'generate-video',
+        { requestData, requestId },
+        { jobId: requestId }
+    );
 
-    updateProgress(5, 'status_starting');
-
-    // ... (Core Logic adapted from original) ...
-    // Note: I will need to copy the FULL logic here, ensuring imports like 'utils' are correct relative to this file.
-    // Since this file is in 'src/services/', imports like '../utils/fileOps.js' are correct.
-
-    // COPYING CORE LOGIC
-    // ...
-    // Returning promise that resolves to path
-    return coreGenerationLogic(data, requestId, updateProgress);
+    console.log(`[Queue] Job ${job.id} added to queue for requestId: ${requestId}`);
+    return { status: 'queued', jobId: requestId };
 };
 
-const coreGenerationLogic = async (data, requestId, updateProgress) => {
+/**
+ * Check if a job result is ready for download
+ */
+export const checkJobResult = async (requestId) => {
+    return await getJobResult(requestId);
+};
+
+/**
+ * Send push notification on completion (called by the worker's updateProgress)
+ */
+export const sendCompletionNotification = (requestId) => {
+    const subscription = subscriptionStore.get(requestId);
+    if (subscription) {
+        const payload = JSON.stringify({
+            title: 'Video Generation Complete!',
+            body: `Your Quran video is ready.`,
+            icon: '/icon.png'
+        });
+        webPush.sendNotification(subscription, payload)
+            .catch(err => console.error("Error sending notification:", err))
+            .finally(() => subscriptionStore.delete(requestId));
+    }
+};
+
+/**
+ * Core video generation logic — exported for the worker to import
+ * This is the heavy FFmpeg work that runs inside the BullMQ worker
+ */
+export const coreGenerationLogic = async (data, requestId, updateProgress) => {
     const { surah, ayah_start, ayah_end, reciter_id, translation_id, background_url, resolution = 720, platform = 'reel' } = data;
 
     const tempDir = path.join(process.cwd(), 'temp', requestId);
@@ -101,9 +126,8 @@ const coreGenerationLogic = async (data, requestId, updateProgress) => {
 
     try {
         // 1. Fetch Quran Data
-        updateProgress(10, 'status_fetching');
+        await updateProgress(10, 'status_fetching');
         const quranUrl = `http://api.alquran.cloud/v1/surah/${surah}/editions/${reciter_id},${translation_id}`;
-        // ... (truncated for brevity in this thought trace, but will write full content) ...
         const response = await axios.get(quranUrl);
         const editions = response.data.data;
 
@@ -129,7 +153,7 @@ const coreGenerationLogic = async (data, requestId, updateProgress) => {
         }
 
         // 2. Download Assets
-        updateProgress(20, 'status_downloading');
+        await updateProgress(20, 'status_downloading');
         const bgPath = path.join(tempDir, 'background.mp4');
         const fallbackBgPath = path.join(process.cwd(), 'fallback video', 'default_background.mp4');
 
@@ -159,7 +183,7 @@ const coreGenerationLogic = async (data, requestId, updateProgress) => {
         const width = targetWidth - (targetWidth % 2);
         const height = targetHeight - (targetHeight % 2);
 
-        updateProgress(30, 'status_processing_audio');
+        await updateProgress(30, 'status_processing_audio');
 
         for (const ayah of ayahs) {
             const audioFilename = `audio_${ayah.number}.mp3`;
@@ -187,7 +211,7 @@ const coreGenerationLogic = async (data, requestId, updateProgress) => {
         }
 
         // 3. Composition
-        updateProgress(50, 'status_rendering');
+        await updateProgress(50, 'status_rendering');
         const outputPath = path.join(process.cwd(), 'outputs', `video_${requestId}.mp4`);
 
         return new Promise((resolve, reject) => {
@@ -220,21 +244,25 @@ const coreGenerationLogic = async (data, requestId, updateProgress) => {
                     '-c:v', 'libx264',
                     '-c:a', 'aac',
                     '-pix_fmt', 'yuv420p',
+                    '-threads', '2',
                     '-shortest'
                 ])
                 .output(outputPath)
-                .on('progress', (progress) => {
+                .on('progress', async (progress) => {
                     const p = progress.percent ? Math.min(99, 50 + (progress.percent / 2)) : 75;
-                    updateProgress(Math.floor(p), 'status_rendering');
+                    await updateProgress(Math.floor(p), 'status_rendering');
                 })
                 .on('end', () => {
-                    updateProgress(100, 'status_completed');
                     setTimeout(async () => {
                         await cleanupTempDir(tempDir);
                         try { fs.rmdirSync(tempDir); } catch (e) {
                             console.error("Failed to remove temp dir:", e.message);
                         }
-                        resolve({ path: outputPath, status: 'completed' }); // Return object
+
+                        // Send push notification
+                        sendCompletionNotification(requestId);
+
+                        resolve({ path: outputPath, status: 'completed' });
                     }, 1000);
                 })
                 .on('error', (err) => {
@@ -246,7 +274,6 @@ const coreGenerationLogic = async (data, requestId, updateProgress) => {
 
     } catch (e) {
         cleanupTempDir(tempDir);
-        progressStore.set(requestId, { error: e.message }); // Ensure error is set
         throw e;
     }
 };

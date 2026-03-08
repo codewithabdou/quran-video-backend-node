@@ -1,11 +1,7 @@
 services:
   quran-backend:
-    # Option 1: Build locally (Recommended for development)
-    build: .
-
-    # Option 2: Pull from GHCR (replace with your GitHub username)
-    # image: ghcr.io/codewithabdou/quran-backend:latest
-
+    # Pull from GHCR for production
+    image: ghcr.io/codewithabdou/quran-backend:latest
     container_name: quran-backend
     restart: unless-stopped
 
@@ -13,19 +9,20 @@ services:
       - "5000:5000"
 
     environment:
-      - NODE_ENV=development
+      - NODE_ENV=production
       - PORT=5000
-      # Update THIS ALLOWED_ORIGINS to match your frontend domain exactly (e.g., http://localhost:5173 or https://your-domain.com)
-      - ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173
+      # IMPORTANT: Update ALLOWED_ORIGINS to match your exact production frontend domain exact URL
+      - ALLOWED_ORIGINS=https://your-frontend-domain.com
       - TRUSTED_IPS=127.0.0.1,::1
-      - VAPID_PUBLIC_KEY=BIcIapCPcgUxx--VudL5XMd2KO9AG5EZ_0iaTjxUxVPikFTTZCqRAlJ-ZqNx6k9iNRcbKjh538sdM_65gNCMAys
-      - VAPID_PRIVATE_KEY=-2uWx0G-i8q9Ivu1P7h-URpV1hok_jKUqKQTR7zcCEI
-      - VAPID_EMAIL=mailto:khaledhabouche08@gmail.com
-      - PEXELS_API_KEY=d8FoyLQB0oEUkQJvPshVT1zEB0Xo9QVbsKbk6peyK8Fin2dmIjsQyqqq
+      # It's better to pass sensitive keys via a .env file on the VPS rather than hardcoding here
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}
+      - VAPID_EMAIL=${VAPID_EMAIL}
+      - PEXELS_API_KEY=${PEXELS_API_KEY}
       - REDIS_URL=redis://redis:6379
 
     volumes:
-      - ./src:/app/src
+      # Only mapping outputs, not src, because we use the built image in production
       - backend-outputs:/app/outputs
 
     depends_on:

@@ -1,5 +1,5 @@
 import express from 'express';
-import { generateVideoEndpoint, getProgressStream, subscribe } from '../controllers/videoController.js';
+import { generateVideoEndpoint, getProgressStream, subscribe, downloadVideoEndpoint } from '../controllers/videoController.js';
 import { videoGenerationLimiter } from '../middleware/rateLimiter.js';
 import { validateVideoRequest, validateRequestId, validateSubscription } from '../middleware/validation.js';
 
@@ -59,7 +59,8 @@ const router = express.Router();
  * @swagger
  * /generate-video:
  *   post:
- *     summary: Generate a Quran video
+ *     summary: Queue a Quran video generation job
+ *     description: Adds a video generation job to the queue and returns immediately with a jobId. Use the progress endpoint to track status and the download endpoint to retrieve the result.
  *     tags: [Generator]
  *     requestBody:
  *       required: true
@@ -68,15 +69,20 @@ const router = express.Router();
  *           schema:
  *             $ref: '#/components/schemas/VideoRequest'
  *     responses:
- *       200:
- *         description: Video generated successfully (returns binary file)
- *         content:
- *           video/mp4:
- *             schema:
- *               type: string
- *               format: binary
  *       202:
- *         description: Request accepted and processing (if async/SSE used)
+ *         description: Video generation queued successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 jobId:
+ *                   type: string
+ *                 status:
+ *                   type: string
+ *                   enum: [queued, already_processing]
  *       500:
  *         description: Server error
  */
@@ -94,7 +100,7 @@ router.post('/generate-video', videoGenerationLimiter, validateVideoRequest, gen
  *         schema:
  *           type: string
  *         required: true
- *         description: GUID of the request
+ *         description: Job ID returned from generate-video
  *     responses:
  *       200:
  *         description: Event stream of progress updates
@@ -104,6 +110,35 @@ router.post('/generate-video', videoGenerationLimiter, validateVideoRequest, gen
  *               type: string
  */
 router.get('/progress/:requestId', validateRequestId, getProgressStream);
+
+/**
+ * @swagger
+ * /download/{jobId}:
+ *   get:
+ *     summary: Download a completed video
+ *     description: Downloads the generated video file. Available for 30 minutes after completion.
+ *     tags: [Generator]
+ *     parameters:
+ *       - in: path
+ *         name: jobId
+ *         schema:
+ *           type: string
+ *         required: true
+ *         description: Job ID returned from generate-video
+ *     responses:
+ *       200:
+ *         description: Video file download
+ *         content:
+ *           video/mp4:
+ *             schema:
+ *               type: string
+ *               format: binary
+ *       404:
+ *         description: Video not found or still processing
+ *       410:
+ *         description: Video file has expired
+ */
+router.get('/download/:jobId', downloadVideoEndpoint);
 
 /**
  * @swagger
