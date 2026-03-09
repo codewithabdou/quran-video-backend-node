@@ -57,7 +57,7 @@ COPY . .
 COPY fonts/ /app/fonts/
 
 # Create runtime directories and set permissions
-RUN mkdir -p temp outputs && chown -R appuser:appuser /app
+RUN mkdir -p temp uploads outputs && chmod -R 777 temp uploads outputs && chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
