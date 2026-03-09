@@ -16,6 +16,11 @@ export const downloadFile = async (url, destination) => {
                     method: 'GET',
                     responseType: 'stream',
                     timeout: 30000, // 30 second timeout
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': '*/*, video/mp4, audio/mpeg',
+                        'Accept-Encoding': 'gzip, deflate, br'
+                    }
                 });
 
                 response.data.pipe(writer);

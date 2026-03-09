@@ -2,6 +2,9 @@ import { createCanvas, registerFont } from 'canvas';
 import fs from 'fs';
 import path from 'path';
 
+// Track registered fonts
+const registeredFonts = new Set();
+
 // Helper to wrap text
 function wrapText(ctx, text, maxWidth) {
     const words = text.split(' ');
@@ -35,18 +38,24 @@ export const createSubtitleImage = async (arabicText, englishText, outputPath, s
     } = settings;
 
     // Register fonts (ensure paths are correct)
-    console.log(`Registering Arabic Font from: ${arabicFontPath}`);
-    if (fs.existsSync(arabicFontPath)) {
-        registerFont(arabicFontPath, { family: 'Amiri' });
-    } else {
-        console.warn(`Arabic font not found at ${arabicFontPath}`);
+    if (!registeredFonts.has(arabicFontPath)) {
+        console.log(`Registering Arabic Font from: ${arabicFontPath}`);
+        if (fs.existsSync(arabicFontPath)) {
+            registerFont(arabicFontPath, { family: 'Amiri' });
+            registeredFonts.add(arabicFontPath);
+        } else {
+            console.warn(`Arabic font not found at ${arabicFontPath}`);
+        }
     }
 
-    console.log(`Registering English Font from: ${englishFontPath}`);
-    if (fs.existsSync(englishFontPath)) {
-        registerFont(englishFontPath, { family: 'Arial' });
-    } else {
-        console.warn(`English font not found at ${englishFontPath}`);
+    if (!registeredFonts.has(englishFontPath)) {
+        console.log(`Registering English Font from: ${englishFontPath}`);
+        if (fs.existsSync(englishFontPath)) {
+            registerFont(englishFontPath, { family: 'Arial' });
+            registeredFonts.add(englishFontPath);
+        } else {
+            console.warn(`English font not found at ${englishFontPath}`);
+        }
     }
 
     const canvas = createCanvas(width, height);

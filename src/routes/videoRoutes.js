@@ -1,7 +1,8 @@
 import express from 'express';
-import { generateVideoEndpoint, getProgressStream, subscribe, downloadVideoEndpoint } from '../controllers/videoController.js';
+import { generateVideoEndpoint, getProgressStream, subscribe, downloadVideoEndpoint, uploadBackground, checkBackground } from '../controllers/videoController.js';
 import { videoGenerationLimiter } from '../middleware/rateLimiter.js';
 import { validateVideoRequest, validateRequestId, validateSubscription } from '../middleware/validation.js';
+import { upload } from '../middleware/upload.js';
 
 const router = express.Router();
 
@@ -139,6 +140,66 @@ router.get('/progress/:requestId', validateRequestId, getProgressStream);
  *         description: Video file has expired
  */
 router.get('/download/:jobId', downloadVideoEndpoint);
+
+/**
+ * @swagger
+ * /check-background:
+ *   post:
+ *     summary: Verify if a background video is already cached on the server
+ *     tags: [Generator]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               id:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Check status
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 exists:
+ *                   type: boolean
+ *                 filePath:
+ *                   type: string
+ *                   format: nullable
+ */
+router.post('/check-background', checkBackground);
+
+/**
+ * @swagger
+ * /upload-background:
+ *   post:
+ *     summary: Upload a background video for a generation job
+ *     tags: [Generator]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ *     responses:
+ *       200:
+ *         description: Video file uploaded successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 filePath:
+ *                   type: string
+ */
+router.post('/upload-background', upload.single('file'), uploadBackground);
 
 /**
  * @swagger

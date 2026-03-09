@@ -69,14 +69,18 @@ export const validateVideoRequest = [
             if (value === 'default') {
                 return true;
             }
+            // Allow absolute local paths for uploaded files (Linux/Docker starts with '/' and Windows starts with drive letter)
+            if (value.startsWith('/') || value.startsWith('\\') || /^[a-zA-Z]:/.test(value)) {
+                return true;
+            }
             // Otherwise must be a valid URL
             const urlPattern = /^https?:\/\/.+/;
             if (!urlPattern.test(value)) {
-                throw new Error('Background URL must be a valid URL or "default"');
+                throw new Error('Background URL must be a valid HTTP URL, a local file path, or "default"');
             }
             return true;
         })
-        .withMessage('Background URL must be a valid URL or "default"'),
+        .withMessage('Background URL must be a valid HTTP URL, a local file path, or "default"'),
 
     validate,
 ];

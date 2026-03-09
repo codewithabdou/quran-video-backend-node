@@ -163,13 +163,27 @@ export const coreGenerationLogic = async (data, requestId, updateProgress) => {
             } else {
                 throw new Error('Fallback video not found');
             }
-        } else {
+        } else if (background_url.startsWith('http://') || background_url.startsWith('https://')) {
+            // It's an external URL, attempt standard download
             const bgDownloaded = await downloadFile(background_url, bgPath);
             if (!bgDownloaded || !fs.existsSync(bgPath)) {
                 if (fs.existsSync(fallbackBgPath)) {
                     fs.copyFileSync(fallbackBgPath, bgPath);
                 } else {
                     throw new Error('Background download failed and fallback video not found');
+                }
+            }
+        } else {
+            // It's a local file path (e.g., from the /upload-background endpoint / cache)
+            if (fs.existsSync(background_url)) {
+                // Copy the cached file to the temp directory where the composition happens
+                fs.copyFileSync(background_url, bgPath);
+                // We deliberately do NOT delete the original `background_url` here anymore so it persists as a cache
+            } else {
+                if (fs.existsSync(fallbackBgPath)) {
+                    fs.copyFileSync(fallbackBgPath, bgPath);
+                } else {
+                    throw new Error('Local background file not found and fallback video not found');
                 }
             }
         }
@@ -185,17 +199,15 @@ export const coreGenerationLogic = async (data, requestId, updateProgress) => {
 
         await updateProgress(30, 'status_processing_audio');
 
-        for (const ayah of ayahs) {
+        // Parallelize downloads, duration extraction, and subtitle generation
+        await Promise.all(ayahs.map(async (ayah) => {
             const audioFilename = `audio_${ayah.number}.mp3`;
             const audioPath = path.join(tempDir, audioFilename);
             const dlSuccess = await downloadFile(ayah.audio, audioPath);
             if (!dlSuccess) throw new Error(`Failed to download audio for ayah ${ayah.number}`);
-            audioPaths.push(audioPath);
+            ayah.audioPath = audioPath;
 
-            const duration = await getMediaDuration(audioPath);
-            ayah.duration = duration;
-            ayah.startTime = totalDuration;
-            totalDuration += duration;
+            ayah.duration = await getMediaDuration(audioPath);
 
             const subFilename = `sub_${ayah.number}.png`;
             const subPath = path.join(tempDir, subFilename);
@@ -207,7 +219,16 @@ export const coreGenerationLogic = async (data, requestId, updateProgress) => {
                 arabicFontSize: width * 0.06,
                 englishFontSize: width * 0.04
             });
-            subtitleImages.push({ path: subPath, start: ayah.startTime, end: ayah.startTime + duration });
+            ayah.subPath = subPath;
+        }));
+
+        // Compute sequential timings
+        for (const ayah of ayahs) {
+            ayah.startTime = totalDuration;
+            totalDuration += ayah.duration;
+
+            audioPaths.push(ayah.audioPath);
+            subtitleImages.push({ path: ayah.subPath, start: ayah.startTime, end: ayah.startTime + ayah.duration });
         }
 
         // 3. Composition

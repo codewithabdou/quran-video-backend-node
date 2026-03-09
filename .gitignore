@@ -11,6 +11,7 @@ temp/
 outputs/
 logs/
 *.log
+uploads/
 
 # Testing
 coverage/
@@ -24,6 +25,5 @@ Thumbs.db
 src/constants/pexels_videos_cache.json
 
 # Docker
-backend-node/node_modules
 docker-compose.prod.yml
 docker-compose.yml

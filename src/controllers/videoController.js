@@ -1,5 +1,6 @@
 import { enqueueVideoGeneration, getProgress, subscribeToProgress, checkJobResult } from '../services/videoService.js';
 import fs from 'fs';
+import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
 /**
@@ -105,4 +106,47 @@ export const subscribe = (req, res) => {
     const { requestId, subscription } = req.body;
     subscribeToProgress(requestId, subscription);
     res.status(201).json({ message: "Subscribed successfully" });
+};
+
+/**
+ * POST /upload-background
+ * Handle the foreground upload of background videos bypassing external rate limits
+ */
+export const uploadBackground = (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: "No file provided" });
+        }
+
+        // Return the absolute path on the disk to the frontend so it can pass it to generate-video
+        res.status(200).json({ filePath: req.file.path });
+    } catch (error) {
+        console.error("Upload failed:", error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+/**
+ * POST /check-background
+ * Verify if a specific background video is already cached on the server
+ */
+export const checkBackground = (req, res) => {
+    try {
+        const { id } = req.body;
+        if (!id) {
+            return res.status(400).json({ error: "Background ID is required" });
+        }
+
+        const expectedPath = path.join(process.cwd(), 'uploads', `pexels_${id}.mp4`);
+        if (fs.existsSync(expectedPath)) {
+            // It's cached! Return the local path
+            return res.status(200).json({ exists: true, filePath: expectedPath });
+        } else {
+            // Not cached, frontend must download and upload it
+            return res.status(200).json({ exists: false, filePath: null });
+        }
+    } catch (error) {
+        console.error("Check background failed:", error);
+        res.status(500).json({ error: error.message });
+    }
 };
