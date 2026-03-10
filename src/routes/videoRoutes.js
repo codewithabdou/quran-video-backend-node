@@ -3,6 +3,7 @@ import { generateVideoEndpoint, getProgressStream, subscribe, downloadVideoEndpo
 import { videoGenerationLimiter } from '../middleware/rateLimiter.js';
 import { validateVideoRequest, validateRequestId, validateSubscription } from '../middleware/validation.js';
 import { upload } from '../middleware/upload.js';
+import { concurrencyLimiter } from '../middleware/concurrencyLimiter.js';
 
 const router = express.Router();
 
@@ -61,7 +62,7 @@ const router = express.Router();
  * /generate-video:
  *   post:
  *     summary: Queue a Quran video generation job
- *     description: Adds a video generation job to the queue and returns immediately with a jobId. Use the progress endpoint to track status and the download endpoint to retrieve the result.
+ *     description: Adds a video generation job to the queue and returns immediately with a jobId. Use the progress endpoint to track status and the download endpoint to retrieve the result. Only one concurrent job per IP is allowed.
  *     tags: [Generator]
  *     requestBody:
  *       required: true
@@ -84,10 +85,12 @@ const router = express.Router();
  *                 status:
  *                   type: string
  *                   enum: [queued, already_processing]
+ *       429:
+ *         description: A video is already being generated for this IP
  *       500:
  *         description: Server error
  */
-router.post('/generate-video', videoGenerationLimiter, validateVideoRequest, generateVideoEndpoint);
+router.post('/generate-video', videoGenerationLimiter, concurrencyLimiter, validateVideoRequest, generateVideoEndpoint);
 
 /**
  * @swagger

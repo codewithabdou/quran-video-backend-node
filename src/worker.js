@@ -1,5 +1,5 @@
 import { Worker } from 'bullmq';
-import { VIDEO_QUEUE_NAME, redisConnection, setProgress, setJobResult } from './config/queue.js';
+import { VIDEO_QUEUE_NAME, redisConnection, setProgress, setJobResult, clearActiveJob } from './config/queue.js';
 import { coreGenerationLogic } from './services/videoService.js';
 
 /**
@@ -9,7 +9,7 @@ import { coreGenerationLogic } from './services/videoService.js';
 const worker = new Worker(
     VIDEO_QUEUE_NAME,
     async (job) => {
-        const { requestData, requestId } = job.data;
+        const { requestData, requestId, clientIp } = job.data;
         console.log(`[Worker] Processing job ${job.id} (requestId: ${requestId})`);
 
         const updateProgress = async (percentage, status) => {
@@ -27,11 +27,24 @@ const worker = new Worker(
             await setJobResult(requestId, result.path);
             await updateProgress(100, 'status_completed');
 
+            // Release the IP concurrency lock
+            if (clientIp) {
+                await clearActiveJob(clientIp);
+                console.log(`[Worker] Released concurrency lock for IP: ${clientIp}`);
+            }
+
             console.log(`[Worker] Job ${job.id} completed. Output: ${result.path}`);
             return { path: result.path, status: 'completed' };
         } catch (error) {
             console.error(`[Worker] Job ${job.id} failed:`, error.message);
             await setProgress(requestId, { error: error.message, status: 'failed' });
+
+            // Release the IP concurrency lock even on failure
+            if (clientIp) {
+                await clearActiveJob(clientIp);
+                console.log(`[Worker] Released concurrency lock for IP (failed): ${clientIp}`);
+            }
+
             throw error; // BullMQ will mark the job as failed
         }
     },

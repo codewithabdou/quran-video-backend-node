@@ -17,6 +17,7 @@ describe('Video Controller', () => {
 
     beforeEach(() => {
         req = {
+            ip: '127.0.0.1',
             body: {
                 surah: 1,
                 ayah_start: 1,
@@ -42,7 +43,7 @@ describe('Video Controller', () => {
 
             await generateVideoEndpoint(req, res);
 
-            expect(videoService.enqueueVideoGeneration).toHaveBeenCalledWith(req.body, expect.any(String));
+            expect(videoService.enqueueVideoGeneration).toHaveBeenCalledWith(req.body, expect.any(String), '127.0.0.1');
             expect(res.status).toHaveBeenCalledWith(202);
             expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
                 jobId: 'test-job-id',

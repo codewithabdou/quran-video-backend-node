@@ -12,7 +12,7 @@ import { downloadFile, cleanupTempDir } from '../utils/fileOps.js';
 import { createSubtitleImage } from '../utils/textGen.js';
 import webPush from 'web-push';
 import dotenv from 'dotenv';
-import { videoQueue, getProgressData, setProgress, deleteProgress, getJobResult, getQueuePosition } from '../config/queue.js';
+import { videoQueue, getProgressData, setProgress, deleteProgress, getJobResult, getQueuePosition, setActiveJob } from '../config/queue.js';
 
 dotenv.config();
 
@@ -69,7 +69,7 @@ export const getProgress = (requestId, callback, req) => {
  * Add a video generation job to the queue (non-blocking)
  * Returns the job ID immediately
  */
-export const enqueueVideoGeneration = async (requestData, requestId) => {
+export const enqueueVideoGeneration = async (requestData, requestId, clientIp) => {
     // Check if this request is already being processed
     const existingProgress = await getProgressData(requestId);
     if (existingProgress && existingProgress.status !== 'status_completed' && existingProgress.status !== 'completed' && !existingProgress.error) {
@@ -79,12 +79,17 @@ export const enqueueVideoGeneration = async (requestData, requestId) => {
     // Set initial progress
     await setProgress(requestId, { status: 'status_queued', percentage: 0 });
 
-    // Add job to BullMQ queue
+    // Add job to BullMQ queue (include clientIp so the worker can clear the lock)
     const job = await videoQueue.add(
         'generate-video',
-        { requestData, requestId },
+        { requestData, requestId, clientIp },
         { jobId: requestId }
     );
+
+    // Register the IP-to-job mapping for concurrency limiting
+    if (clientIp) {
+        await setActiveJob(clientIp, requestId);
+    }
 
     console.log(`[Queue] Job ${job.id} added to queue for requestId: ${requestId}`);
     return { status: 'queued', jobId: requestId };

@@ -108,6 +108,37 @@ export const getJobResult = async (requestId) => {
 };
 
 /**
+ * Store active job for a given IP (concurrency limiter)
+ * Only one active job per IP is allowed at a time.
+ */
+export const setActiveJob = async (ip, jobId) => {
+    const client = redisConnection;
+    await client.set(
+        `active-job:${ip}`,
+        jobId,
+        'EX',
+        900 // 15 minutes TTL (safety net — cleared on job completion/failure)
+    );
+};
+
+/**
+ * Get the active job for a given IP
+ * Returns the jobId string or null
+ */
+export const getActiveJob = async (ip) => {
+    const client = redisConnection;
+    return await client.get(`active-job:${ip}`);
+};
+
+/**
+ * Clear the active job for a given IP (called when job completes or fails)
+ */
+export const clearActiveJob = async (ip) => {
+    const client = redisConnection;
+    await client.del(`active-job:${ip}`);
+};
+
+/**
  * Gracefully close connections
  */
 export const closeConnections = async () => {

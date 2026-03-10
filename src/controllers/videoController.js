@@ -12,7 +12,7 @@ export const generateVideoEndpoint = async (req, res) => {
     const requestId = requestData.request_id || uuidv4();
 
     try {
-        const result = await enqueueVideoGeneration(requestData, requestId);
+        const result = await enqueueVideoGeneration(requestData, requestId, req.ip);
 
         if (result.status === 'already_processing') {
             return res.status(202).json({
