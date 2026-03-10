@@ -1,8 +1,12 @@
-import { getActiveJob, getProgressData } from '../config/queue.js';
+import { getActiveJob, getProgressData, clearActiveJob } from '../config/queue.js';
+
+// Jobs not updated for longer than this are considered stale/hung
+const STALE_JOB_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Middleware: Limits each IP to ONE concurrent video generation job.
  * If the IP already has a job that is waiting or processing, reject with 429.
+ * Jobs that haven't reported progress in 5 minutes are treated as stale.
  */
 export const concurrencyLimiter = async (req, res, next) => {
     try {
@@ -12,22 +16,31 @@ export const concurrencyLimiter = async (req, res, next) => {
         if (existingJobId) {
             // Double-check the job is actually still active (not a stale key)
             const progress = await getProgressData(existingJobId);
-            const isStillActive = progress
-                && progress.status !== 'status_completed'
-                && progress.status !== 'completed'
-                && !progress.error;
+            const isTerminal = !progress
+                || progress.status === 'status_completed'
+                || progress.status === 'completed'
+                || progress.error;
 
-            if (isStillActive) {
-                return res.status(429).json({
-                    error: {
-                        message: 'You already have a video being generated. Please wait for it to finish before starting a new one.',
-                        existingJobId,
-                        retryAfter: 'After current job completes',
-                    },
-                });
+            if (!isTerminal) {
+                // Check if the job is stale (no progress update for 5 minutes)
+                const isStale = progress.updatedAt
+                    && (Date.now() - progress.updatedAt) > STALE_JOB_THRESHOLD_MS;
+
+                if (!isStale) {
+                    return res.status(429).json({
+                        error: {
+                            message: 'You already have a video being generated. Please wait for it to finish before starting a new one.',
+                            existingJobId,
+                            retryAfter: 'After current job completes',
+                        },
+                    });
+                }
+
+                console.log(`[ConcurrencyLimiter] Job ${existingJobId} for IP ${clientIp} is stale (no update for 5+ min). Allowing new request.`);
             }
-            // If the key exists but the job is done/failed, it's stale — allow through
-            // (clearActiveJob will clean it up, but we handle the race condition here)
+
+            // Terminal or stale — clear the lock proactively
+            await clearActiveJob(clientIp);
         }
 
         next();

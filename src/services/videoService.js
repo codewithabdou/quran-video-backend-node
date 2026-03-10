@@ -75,8 +75,17 @@ export const getProgress = (requestId, callback, req) => {
 export const enqueueVideoGeneration = async (requestData, requestId, clientIp) => {
     // Check if this request is already being processed
     const existingProgress = await getProgressData(requestId);
-    if (existingProgress && existingProgress.status !== 'status_completed' && existingProgress.status !== 'completed' && !existingProgress.error) {
-        return { status: 'already_processing', jobId: requestId };
+    if (existingProgress
+        && existingProgress.status !== 'status_completed'
+        && existingProgress.status !== 'completed'
+        && !existingProgress.error) {
+        // Allow through if the job is stale (no update for 5+ minutes)
+        const isStale = existingProgress.updatedAt
+            && (Date.now() - existingProgress.updatedAt) > 5 * 60 * 1000;
+        if (!isStale) {
+            return { status: 'already_processing', jobId: requestId };
+        }
+        console.log(`[Queue] Job ${requestId} is stale. Allowing re-enqueue.`);
     }
 
     // Set initial progress
@@ -339,8 +348,7 @@ export const coreGenerationLogic = async (data, requestId, updateProgress) => {
                     '-c:v', 'libx264',
                     '-c:a', 'aac',
                     '-pix_fmt', 'yuv420p',
-                    '-threads', '2',
-                    '-shortest'
+                    '-threads', '2'
                 ])
                 .output(outputPath)
                 .on('progress', async (progress) => {

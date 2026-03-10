@@ -35,7 +35,7 @@ export const setProgress = async (requestId, data) => {
     const client = redisConnection;
     await client.set(
         `progress:${requestId}`,
-        JSON.stringify(data),
+        JSON.stringify({ ...data, updatedAt: Date.now() }),
         'EX',
         3600 // 1 hour TTL
     );
