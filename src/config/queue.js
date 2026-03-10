@@ -32,6 +32,14 @@ export const videoQueue = new Queue(VIDEO_QUEUE_NAME, {
  * Store progress data in Redis for SSE polling
  */
 export const setProgress = async (requestId, data) => {
+    // If the job is already marked as cancelled, don't overwrite its progress status
+    // unless we are explicitly setting it to cancelled. This prevents race conditions
+    // where the worker tries to update progress right as the cancel endpoint executes.
+    if (data.status !== 'cancelled') {
+        const isAlreadyCancelled = await isCancelled(requestId);
+        if (isAlreadyCancelled) return;
+    }
+
     const client = redisConnection;
     await client.set(
         `progress:${requestId}`,
