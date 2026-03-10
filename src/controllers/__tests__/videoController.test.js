@@ -5,7 +5,23 @@ jest.unstable_mockModule('../../services/videoService.js', () => ({
     enqueueVideoGeneration: jest.fn(),
     getProgress: jest.fn(),
     subscribeToProgress: jest.fn(),
-    checkJobResult: jest.fn()
+    checkJobResult: jest.fn(),
+    coreGenerationLogic: jest.fn(),
+}));
+
+jest.unstable_mockModule('../../config/queue.js', () => ({
+    getActiveJob: jest.fn(),
+    clearActiveJob: jest.fn(),
+    deleteProgress: jest.fn(),
+    videoQueue: { getJob: jest.fn() },
+    setCancelled: jest.fn(),
+    setProgress: jest.fn(),
+    setActiveJob: jest.fn(),
+}));
+
+jest.unstable_mockModule('../../worker.js', () => ({
+    abortJob: jest.fn(),
+    default: {},
 }));
 
 // Dynamic imports are required after unstable_mockModule

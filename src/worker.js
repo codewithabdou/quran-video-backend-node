@@ -1,6 +1,28 @@
 import { Worker } from 'bullmq';
-import { VIDEO_QUEUE_NAME, redisConnection, setProgress, setJobResult, clearActiveJob } from './config/queue.js';
+import { VIDEO_QUEUE_NAME, redisConnection, setProgress, setJobResult, clearActiveJob, isCancelled } from './config/queue.js';
 import { coreGenerationLogic } from './services/videoService.js';
+import fs from 'fs';
+import path from 'path';
+
+/**
+ * Map of active job AbortControllers so the cancel endpoint can signal them.
+ * Key: jobId (requestId), Value: AbortController
+ */
+const activeControllers = new Map();
+
+/**
+ * Abort a running job by its requestId.
+ * Called from the cancel endpoint.
+ */
+export const abortJob = (jobId) => {
+    const controller = activeControllers.get(jobId);
+    if (controller) {
+        controller.abort();
+        console.log(`[Worker] Abort signal sent for job ${jobId}`);
+        return true;
+    }
+    return false;
+};
 
 /**
  * BullMQ Worker for video generation jobs
@@ -12,7 +34,20 @@ const worker = new Worker(
         const { requestData, requestId, clientIp } = job.data;
         console.log(`[Worker] Processing job ${job.id} (requestId: ${requestId})`);
 
+        // Check if this job was cancelled while waiting in queue
+        if (await isCancelled(requestId)) {
+            console.log(`[Worker] Job ${requestId} was cancelled before processing started. Skipping.`);
+            if (clientIp) await clearActiveJob(clientIp);
+            return { status: 'cancelled' };
+        }
+
+        // Create an AbortController for this job
+        const controller = new AbortController();
+        activeControllers.set(requestId, controller);
+
         const updateProgress = async (percentage, status) => {
+            // Don't update progress if the job has been cancelled
+            if (controller.signal.aborted) return;
             await setProgress(requestId, { status, percentage });
             // Also update BullMQ's built-in progress tracking
             await job.updateProgress(percentage);
@@ -21,7 +56,24 @@ const worker = new Worker(
         try {
             await updateProgress(5, 'status_starting');
 
-            const result = await coreGenerationLogic(requestData, requestId, updateProgress);
+            const result = await coreGenerationLogic(requestData, requestId, updateProgress, controller.signal);
+
+            // After generation completes, double-check cancellation before storing result
+            if (controller.signal.aborted || await isCancelled(requestId)) {
+                console.log(`[Worker] Job ${requestId} was cancelled during processing. Discarding result.`);
+                // Clean up the output file
+                if (result && result.path && fs.existsSync(result.path)) {
+                    try {
+                        fs.unlinkSync(result.path);
+                        console.log(`[Worker] Deleted cancelled output file: ${result.path}`);
+                    } catch (e) {
+                        console.error(`[Worker] Failed to delete cancelled output:`, e.message);
+                    }
+                }
+                if (clientIp) await clearActiveJob(clientIp);
+                activeControllers.delete(requestId);
+                return { status: 'cancelled' };
+            }
 
             // Store the result path for the download endpoint
             await setJobResult(requestId, result.path);
@@ -33,9 +85,33 @@ const worker = new Worker(
                 console.log(`[Worker] Released concurrency lock for IP: ${clientIp}`);
             }
 
+            activeControllers.delete(requestId);
             console.log(`[Worker] Job ${job.id} completed. Output: ${result.path}`);
             return { path: result.path, status: 'completed' };
         } catch (error) {
+            activeControllers.delete(requestId);
+
+            // If this was a cancellation, handle it gracefully
+            if (error.name === 'AbortError' || error.message === 'Generation cancelled') {
+                console.log(`[Worker] Job ${requestId} was aborted.`);
+                // Clean up any partial output
+                const outputPath = path.join(process.cwd(), 'outputs', `video_${requestId}.mp4`);
+                if (fs.existsSync(outputPath)) {
+                    try {
+                        fs.unlinkSync(outputPath);
+                        console.log(`[Worker] Deleted partial output: ${outputPath}`);
+                    } catch (e) {
+                        console.error(`[Worker] Failed to delete partial output:`, e.message);
+                    }
+                }
+                if (clientIp) {
+                    await clearActiveJob(clientIp);
+                    console.log(`[Worker] Released concurrency lock for IP (cancelled): ${clientIp}`);
+                }
+                // Return gracefully instead of throwing so BullMQ doesn't mark as "failed"
+                return { status: 'cancelled' };
+            }
+
             console.error(`[Worker] Job ${job.id} failed:`, error.message);
             await setProgress(requestId, { error: error.message, status: 'failed' });
 

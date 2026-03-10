@@ -135,7 +135,7 @@ export const sendCompletionNotification = (requestId) => {
  * Core video generation logic — exported for the worker to import
  * This is the heavy FFmpeg work that runs inside the BullMQ worker
  */
-export const coreGenerationLogic = async (data, requestId, updateProgress) => {
+export const coreGenerationLogic = async (data, requestId, updateProgress, abortSignal) => {
     const { surah, ayah_start, ayah_end, reciter_id, translation_id, background_url, resolution = 720, platform = 'reel' } = data;
 
     const tempDir = path.join(process.cwd(), 'temp', requestId);
@@ -291,7 +291,16 @@ export const coreGenerationLogic = async (data, requestId, updateProgress) => {
         await updateProgress(50, 'status_rendering');
         const outputPath = path.join(process.cwd(), 'outputs', `video_${requestId}.mp4`);
 
+        // Check if cancelled before starting FFmpeg (the expensive part)
+        if (abortSignal && abortSignal.aborted) {
+            await cleanupTempDir(tempDir);
+            const cancelErr = new Error('Generation cancelled');
+            cancelErr.name = 'AbortError';
+            throw cancelErr;
+        }
+
         return new Promise((resolve, reject) => {
+            let settled = false;
             const command = ffmpeg();
             command.input(bgPath).inputOptions(['-stream_loop', '-1']);
 
@@ -308,6 +317,22 @@ export const coreGenerationLogic = async (data, requestId, updateProgress) => {
             if (hasOutroAudio) {
                 outroAudioIndex = outroImageIndex + 1;
                 command.input(outroAudioPath);
+            }
+
+            // Listen for abort signal to kill FFmpeg
+            if (abortSignal) {
+                const onAbort = () => {
+                    console.log(`[VideoService] Abort signal received for ${requestId}. Killing FFmpeg...`);
+                    command.kill('SIGKILL');
+                };
+                if (abortSignal.aborted) {
+                    // Already aborted before we started
+                    cleanupTempDir(tempDir);
+                    const cancelErr = new Error('Generation cancelled');
+                    cancelErr.name = 'AbortError';
+                    return reject(cancelErr);
+                }
+                abortSignal.addEventListener('abort', onAbort, { once: true });
             }
 
             const filter = [];
@@ -356,6 +381,8 @@ export const coreGenerationLogic = async (data, requestId, updateProgress) => {
                     await updateProgress(Math.floor(p), 'status_rendering');
                 })
                 .on('end', () => {
+                    if (settled) return;
+                    settled = true;
                     setTimeout(async () => {
                         await cleanupTempDir(tempDir);
                         try { fs.rmdirSync(tempDir); } catch (e) {
@@ -369,8 +396,17 @@ export const coreGenerationLogic = async (data, requestId, updateProgress) => {
                     }, 1000);
                 })
                 .on('error', (err) => {
+                    if (settled) return;
+                    settled = true;
                     cleanupTempDir(tempDir);
-                    reject(err);
+                    // If aborted, wrap in a recognizable error
+                    if (abortSignal && abortSignal.aborted) {
+                        const cancelErr = new Error('Generation cancelled');
+                        cancelErr.name = 'AbortError';
+                        reject(cancelErr);
+                    } else {
+                        reject(err);
+                    }
                 })
                 .run();
         });

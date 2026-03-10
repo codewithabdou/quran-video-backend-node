@@ -139,6 +139,28 @@ export const clearActiveJob = async (ip) => {
 };
 
 /**
+ * Mark a job as cancelled in Redis
+ */
+export const setCancelled = async (requestId) => {
+    const client = redisConnection;
+    await client.set(
+        `cancelled:${requestId}`,
+        '1',
+        'EX',
+        900 // 15 minutes TTL
+    );
+};
+
+/**
+ * Check if a job has been cancelled
+ */
+export const isCancelled = async (requestId) => {
+    const client = redisConnection;
+    const val = await client.get(`cancelled:${requestId}`);
+    return val === '1';
+};
+
+/**
  * Gracefully close connections
  */
 export const closeConnections = async () => {

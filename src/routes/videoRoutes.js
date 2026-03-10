@@ -1,5 +1,5 @@
 import express from 'express';
-import { generateVideoEndpoint, getProgressStream, subscribe, downloadVideoEndpoint, uploadBackground, checkBackground } from '../controllers/videoController.js';
+import { generateVideoEndpoint, getProgressStream, subscribe, downloadVideoEndpoint, uploadBackground, checkBackground, cancelVideoEndpoint } from '../controllers/videoController.js';
 import { videoGenerationLimiter } from '../middleware/rateLimiter.js';
 import { validateVideoRequest, validateRequestId, validateSubscription } from '../middleware/validation.js';
 import { upload } from '../middleware/upload.js';
@@ -91,6 +91,23 @@ const router = express.Router();
  *         description: Server error
  */
 router.post('/generate-video', videoGenerationLimiter, concurrencyLimiter, validateVideoRequest, generateVideoEndpoint);
+
+/**
+ * @swagger
+ * /generate-video/cancel:
+ *   delete:
+ *     summary: Cancel the active video generation job for the requesting IP
+ *     description: Clears the rate limit lock, deletes progress data, and attempts to remove the job from the queue if it hasn't started.
+ *     tags: [Generator]
+ *     responses:
+ *       200:
+ *         description: Active job cancelled successfully
+ *       404:
+ *         description: No active job found for this IP
+ *       500:
+ *         description: Server error
+ */
+router.delete('/generate-video/cancel', cancelVideoEndpoint);
 
 /**
  * @swagger
