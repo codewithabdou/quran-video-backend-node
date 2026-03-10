@@ -2,14 +2,17 @@ import ffmpeg from 'fluent-ffmpeg';
 import ffmpegPath from 'ffmpeg-static';
 import ffprobePath from 'ffprobe-static';
 
-ffmpeg.setFfmpegPath(ffmpegPath);
-ffmpeg.setFfprobePath(ffprobePath.path);
+// Only set static paths if we're not inside Docker where system ffmpeg is preferred
+if (!process.env.DOCKER_ENV) {
+    ffmpeg.setFfmpegPath(ffmpegPath);
+    ffmpeg.setFfprobePath(ffprobePath.path);
+}
 
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import { downloadFile, cleanupTempDir } from '../utils/fileOps.js';
-import { createSubtitleImage } from '../utils/textGen.js';
+import { createSubtitleImage, createOutroImage } from '../utils/textGen.js';
 import webPush from 'web-push';
 import dotenv from 'dotenv';
 import { videoQueue, getProgressData, setProgress, deleteProgress, getJobResult, getQueuePosition, setActiveJob } from '../config/queue.js';
@@ -219,7 +222,7 @@ export const coreGenerationLogic = async (data, requestId, updateProgress) => {
             await createSubtitleImage(ayah.arabic, ayah.english, subPath, {
                 width: width,
                 height: height,
-                arabicFontPath: path.join(process.cwd(), 'fonts/Amiri-Regular.ttf'),
+                arabicFontPath: path.join(process.cwd(), 'fonts/Nabi.ttf'),
                 englishFontPath: path.join(process.cwd(), 'fonts/arial.ttf'),
                 arabicFontSize: width * 0.06,
                 englishFontSize: width * 0.04
@@ -236,6 +239,45 @@ export const coreGenerationLogic = async (data, requestId, updateProgress) => {
             subtitleImages.push({ path: ayah.subPath, start: ayah.startTime, end: ayah.startTime + ayah.duration });
         }
 
+        // 2.5 Generate Outro Assets
+        const outroAudioPath = path.join(tempDir, 'outro_audio.mp3');
+        // Use the user's requested reciter for the outro audio instead of defaulting to ar.alafasy
+        const outroAudioUrl = `http://api.alquran.cloud/v1/ayah/73:4/${reciter_id}`;
+        let hasOutroAudio = false;
+        try {
+            const outroRes = await axios.get(outroAudioUrl);
+            const outroMp3 = outroRes.data.data.audio;
+            hasOutroAudio = await downloadFile(outroMp3, outroAudioPath);
+        } catch (e) {
+            console.error("Failed to fetch outro audio:", e.message);
+        }
+
+        let outroDuration = 5;
+        if (hasOutroAudio && fs.existsSync(outroAudioPath)) {
+            outroDuration = await getMediaDuration(outroAudioPath);
+        } else {
+            hasOutroAudio = false;
+        }
+
+        const outroSubPath = path.join(tempDir, 'outro_sub.png');
+        // Clean, centralized marketing text encouraging generating and sharing
+        // Add a line break for vertical videos (Reels/TikTok) to balance the layout
+        const isVertical = height > width;
+        const arabicOutroText = isVertical
+            ? "أنشئ وشارك فيديوهات القرآن\nالخاصة بك بسهولة"
+            : "أنشئ وشارك فيديوهات القرآن الخاصة بك بسهولة";
+        const englishOutroText = isVertical
+            ? "Create and share your own Quran\nvideos with ease"
+            : "Create and share your own Quran videos with ease";
+        const urlText = "quran-video-generator.netlify.app";
+
+        await createOutroImage(arabicOutroText, englishOutroText, urlText, outroSubPath, {
+            width: width,
+            height: height,
+            arabicFontPath: path.join(process.cwd(), 'fonts/Nabi.ttf'),
+            englishFontPath: path.join(process.cwd(), 'fonts/arial.ttf')
+        });
+
         // 3. Composition
         await updateProgress(50, 'status_rendering');
         const outputPath = path.join(process.cwd(), 'outputs', `video_${requestId}.mp4`);
@@ -249,24 +291,51 @@ export const coreGenerationLogic = async (data, requestId, updateProgress) => {
             let imageInputsStart = audioInputsStart + audioPaths.length;
             subtitleImages.forEach(img => command.input(img.path));
 
+            // Outro Inputs
+            let outroImageIndex = imageInputsStart + subtitleImages.length;
+            command.input(outroSubPath);
+
+            let outroAudioIndex = -1;
+            if (hasOutroAudio) {
+                outroAudioIndex = outroImageIndex + 1;
+                command.input(outroAudioPath);
+            }
+
             const filter = [];
             const audioLabels = audioPaths.map((_, i) => `[${audioInputsStart + i}:a]`).join('');
             filter.push(`${audioLabels}concat=n=${audioPaths.length}:v=0:a=1[maina]`);
-            filter.push(`[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},trim=duration=${totalDuration}[bg]`);
+
+            const fontFileStr = path.join(process.cwd(), 'fonts', 'arial.ttf').replace(/\\/g, '/').replace(/:/g, '\\\\:');
+            // FFmpeg requires colons in the text parameter to be double-escaped if inside single quotes, or escaped otherwise. Let's strictly escape the colon.
+            const urlTextEscaped = 'https\\://quran-video-generator.netlify.app';
+            // Add fade-out to the main video sequence
+            const fadeOutStart = Math.max(0, totalDuration - 0.5); // Start fade 0.5s before end
+            filter.push(`[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},trim=duration=${totalDuration},drawtext=fontfile='${fontFileStr}':text='${urlTextEscaped}':fontcolor=white@0.7:fontsize=${Math.floor(width * 0.035)}:x=w-tw-20:y=h-th-20,fade=t=out:st=${fadeOutStart}:d=0.5:color=black[bg]`);
 
             let currentVideoLabel = '[bg]';
             subtitleImages.forEach((img, i) => {
                 const nextLabel = `[v${i}]`;
-                filter.push(`${currentVideoLabel}[${imageInputsStart + i}:v]overlay=0:0:enable='between(t,${img.start},${img.end})'${i === subtitleImages.length - 1 ? '[outv]' : nextLabel}`);
+                filter.push(`${currentVideoLabel}[${imageInputsStart + i}:v]overlay=0:0:enable='between(t,${img.start},${img.end})'${i === subtitleImages.length - 1 ? '[mainv]' : nextLabel}`);
                 if (i !== subtitleImages.length - 1) currentVideoLabel = nextLabel;
             });
-            if (subtitleImages.length === 0) filter.push(`${currentVideoLabel}[outv]`);
+            if (subtitleImages.length === 0) filter.push(`${currentVideoLabel}[mainv]`);
+
+            // Outro Logic
+            filter.push(`color=c=black:s=${width}x${height}:d=${outroDuration}[black_bg]`);
+            filter.push(`[black_bg][${outroImageIndex}:v]overlay=(W-w)/2:(H-h)/2:eval=init,fade=t=in:st=0:d=0.5:color=black[outrov]`);
+
+            if (hasOutroAudio) {
+                filter.push(`[mainv][maina][outrov][${outroAudioIndex}:a]concat=n=2:v=1:a=1[finalv][finala]`);
+            } else {
+                filter.push(`aevalsrc=0:d=${outroDuration}[silence]`);
+                filter.push(`[mainv][maina][outrov][silence]concat=n=2:v=1:a=1[finalv][finala]`);
+            }
 
             command
                 .complexFilter(filter)
                 .outputOptions([
-                    '-map', '[outv]',
-                    '-map', '[maina]',
+                    '-map', '[finalv]',
+                    '-map', '[finala]',
                     '-c:v', 'libx264',
                     '-c:a', 'aac',
                     '-pix_fmt', 'yuv420p',
