@@ -38,22 +38,36 @@ export const generateVideoEndpoint = async (req, res) => {
 };
 
 /**
- * Internal function to handle the cancellation of an active job by IP
+ * Internal function to handle the cancellation of an active job by its ID
+ * Optionally provide clientIp to explicitly clear the rate limit lock.
+ * If clientIp is omitted, it attempts to read it from the job data.
  */
-const cancelJobByIp = async (clientIp) => {
-    const activeJobId = await getActiveJob(clientIp);
-
+const cancelJobById = async (activeJobId, explicitClientIp = null) => {
     if (!activeJobId) {
         return null; // Nothing to cancel
     }
 
-    console.log(`[Cancel API/Internal] Cancelling job ${activeJobId} for IP ${clientIp}`);
+    let clientIp = explicitClientIp;
+
+    console.log(`[Cancel API/Internal] Cancelling job ${activeJobId}`);
+
+    // Attempt to extract the IP from the queue job data if not provided
+    try {
+        const job = await videoQueue.getJob(activeJobId);
+        if (job) {
+            clientIp = job.data.clientIp || explicitClientIp;
+        }
+    } catch (e) {
+        console.error(`[Cancel API/Internal] Error reading job data for IP recovery:`, e.message);
+    }
 
     // 1. Set the cancellation flag in Redis (so worker knows to discard results)
     await setCancelled(activeJobId);
 
-    // 2. Clear the IP rate limit lock so user can start a new one
-    await clearActiveJob(clientIp);
+    // 2. Clear the IP rate limit lock so user can start a new one (if we found an IP)
+    if (clientIp) {
+        await clearActiveJob(clientIp);
+    }
 
     // 3. Set progress to 'cancelled' so the SSE stream notifies the frontend
     await setProgress(activeJobId, { status: 'cancelled', percentage: 0 });
@@ -81,6 +95,72 @@ const cancelJobByIp = async (clientIp) => {
     }
     
     return activeJobId;
+};
+
+/**
+ * Internal helper backward compatibility
+ */
+const cancelJobByIp = async (clientIp) => {
+    const activeJobId = await getActiveJob(clientIp);
+    return cancelJobById(activeJobId, clientIp);
+};
+
+/**
+ * GET /admin/jobs
+ * List all jobs in the queue for the experimental admin dashboard
+ */
+export const getAdminJobsEndpoint = async (req, res) => {
+    try {
+        // BullMQ returns jobs lazily. We will fetch them by status.
+        const statuses = ['active', 'waiting', 'delayed', 'completed', 'failed'];
+        const jobs = await videoQueue.getJobs(statuses);
+        
+        // Map to a cleaner dashboard format
+        const sortedJobs = jobs.map(job => ({
+            id: job.id,
+            name: job.name,
+            data: job.data.requestData,
+            clientIp: job.data.clientIp,
+            timestamp: job.timestamp,
+            processedOn: job.processedOn,
+            finishedOn: job.finishedOn,
+            failedReason: job.failedReason,
+            status: job._workerName || statuses.find(s => statuses.indexOf(s) > -1), // Approximated
+        })).sort((a, b) => b.timestamp - a.timestamp);
+
+        // Fetch precise states
+        for (let j of sortedJobs) {
+            const rawJob = jobs.find(x => x.id === j.id);
+            if (rawJob) {
+                 j.status = await rawJob.getState();
+            }
+        }
+
+        res.status(200).json({ total: sortedJobs.length, jobs: sortedJobs });
+    } catch (err) {
+        console.error("[Admin API] Failed to list jobs:", err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+/**
+ * DELETE /admin/jobs/:jobId
+ * Force cancel a specific job by its ID
+ */
+export const cancelAdminJobEndpoint = async (req, res) => {
+    try {
+        const { jobId } = req.params;
+        const cancelledJobId = await cancelJobById(jobId);
+
+        if (!cancelledJobId) {
+            return res.status(404).json({ message: 'No job found or could not cancel.' });
+        }
+
+        res.status(200).json({ message: `Job ${jobId} cancelled successfully.` });
+    } catch (err) {
+        console.error("[Admin API] Failed to cancel job:", err);
+        res.status(500).json({ error: err.message });
+    }
 };
 
 /**

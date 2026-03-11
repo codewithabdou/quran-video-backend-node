@@ -1,5 +1,5 @@
 import express from 'express';
-import { generateVideoEndpoint, getProgressStream, subscribe, downloadVideoEndpoint, uploadBackground, checkBackground, cancelVideoEndpoint } from '../controllers/videoController.js';
+import { generateVideoEndpoint, getProgressStream, subscribe, downloadVideoEndpoint, uploadBackground, checkBackground, cancelVideoEndpoint, getAdminJobsEndpoint, cancelAdminJobEndpoint } from '../controllers/videoController.js';
 import { videoGenerationLimiter } from '../middleware/rateLimiter.js';
 import { validateVideoRequest, validateRequestId, validateSubscription } from '../middleware/validation.js';
 import { upload } from '../middleware/upload.js';
@@ -247,5 +247,35 @@ router.post('/upload-background', upload.single('file'), uploadBackground);
  *         description: Subscribed successfully
  */
 router.post('/subscribe', validateSubscription, subscribe);
+
+/**
+ * @swagger
+ * /admin/jobs:
+ *   get:
+ *     summary: Get all jobs in queue (Admin)
+ *     tags: [Admin]
+ *     responses:
+ *       200:
+ *         description: List of jobs
+ */
+router.get('/admin/jobs', getAdminJobsEndpoint);
+
+/**
+ * @swagger
+ * /admin/jobs/{jobId}:
+ *   delete:
+ *     summary: Cancel a job by ID (Admin)
+ *     tags: [Admin]
+ *     parameters:
+ *       - in: path
+ *         name: jobId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Job Cancelled
+ */
+router.delete('/admin/jobs/:jobId', cancelAdminJobEndpoint);
 
 export default router;
