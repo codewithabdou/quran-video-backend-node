@@ -38,23 +38,89 @@ export const generateVideoEndpoint = async (req, res) => {
 };
 
 /**
+ * Internal function to handle the cancellation of an active job by IP
+ */
+const cancelJobByIp = async (clientIp) => {
+    const activeJobId = await getActiveJob(clientIp);
+
+    if (!activeJobId) {
+        return null; // Nothing to cancel
+    }
+
+    console.log(`[Cancel API/Internal] Cancelling job ${activeJobId} for IP ${clientIp}`);
+
+    // 1. Set the cancellation flag in Redis (so worker knows to discard results)
+    await setCancelled(activeJobId);
+
+    // 2. Clear the IP rate limit lock so user can start a new one
+    await clearActiveJob(clientIp);
+
+    // 3. Set progress to 'cancelled' so the SSE stream notifies the frontend
+    await setProgress(activeJobId, { status: 'cancelled', percentage: 0 });
+
+    // 4. Send the abort signal to kill the running FFmpeg process
+    const aborted = abortJob(activeJobId);
+    if (aborted) {
+        console.log(`[Cancel API/Internal] Abort signal sent successfully for job ${activeJobId}.`);
+    }
+
+    // 5. Attempt to remove the job from the BullMQ queue (if still waiting)
+    try {
+        const job = await videoQueue.getJob(activeJobId);
+        if (job) {
+            const state = await job.getState();
+            if (state === 'waiting' || state === 'delayed') {
+                await job.remove();
+                console.log(`[Cancel API/Internal] Removed job ${activeJobId} from BullMQ queue.`);
+            } else if (state === 'active') {
+                console.log(`[Cancel API/Internal] Job ${activeJobId} is active — FFmpeg kill signal sent.`);
+            }
+        }
+    } catch (queueErr) {
+        console.error(`[Cancel API/Internal] Error removing job from queue:`, queueErr.message);
+    }
+    
+    return activeJobId;
+};
+
+/**
  * GET /progress/:requestId
  * SSE endpoint for real-time progress updates
  */
 export const getProgressStream = (req, res) => {
     const { requestId } = req.params;
+    const clientIp = req.ip;
 
     // Setup SSE
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
+    let isFinished = false;
+
     getProgress(requestId, (data, isComplete) => {
-        res.write(`data: ${JSON.stringify(data)}\n\n`);
+        if (!isFinished) {
+            res.write(`data: ${JSON.stringify(data)}\n\n`);
+        }
         if (isComplete) {
+            isFinished = true;
             res.end();
         }
     }, req);
+
+    // Automatically cancel the job if the client closes the connection (e.g., closes tab, refresh)
+    // before the video has finished rendering.
+    req.on('close', async () => {
+        if (!isFinished) {
+            console.log(`[SSE] Connection closed prematurely by IP ${clientIp}. Auto-cancelling job ${requestId}...`);
+            isFinished = true;
+            try {
+                await cancelJobByIp(clientIp);
+            } catch (err) {
+                console.error(`[SSE/Cancel] Failed to auto-cancel job on disconnect:`, err);
+            }
+        }
+    });
 };
 
 /**
@@ -159,43 +225,10 @@ export const checkBackground = (req, res) => {
 export const cancelVideoEndpoint = async (req, res, next) => {
     try {
         const clientIp = req.ip;
-        const activeJobId = await getActiveJob(clientIp);
+        const cancelledJobId = await cancelJobByIp(clientIp);
 
-        if (!activeJobId) {
+        if (!cancelledJobId) {
             return res.status(404).json({ message: 'No active job found to cancel.' });
-        }
-
-        console.log(`[Cancel API] Cancelling job ${activeJobId} for IP ${clientIp}`);
-
-        // 1. Set the cancellation flag in Redis (so worker knows to discard results)
-        await setCancelled(activeJobId);
-
-        // 2. Clear the IP rate limit lock so user can start a new one
-        await clearActiveJob(clientIp);
-
-        // 3. Set progress to 'cancelled' so the SSE stream notifies the frontend
-        await setProgress(activeJobId, { status: 'cancelled', percentage: 0 });
-
-        // 4. Send the abort signal to kill the running FFmpeg process
-        const aborted = abortJob(activeJobId);
-        if (aborted) {
-            console.log(`[Cancel API] Abort signal sent successfully for job ${activeJobId}.`);
-        }
-
-        // 5. Attempt to remove the job from the BullMQ queue (if still waiting)
-        try {
-            const job = await videoQueue.getJob(activeJobId);
-            if (job) {
-                const state = await job.getState();
-                if (state === 'waiting' || state === 'delayed') {
-                    await job.remove();
-                    console.log(`[Cancel API] Removed job ${activeJobId} from BullMQ queue.`);
-                } else if (state === 'active') {
-                    console.log(`[Cancel API] Job ${activeJobId} is active — FFmpeg kill signal sent.`);
-                }
-            }
-        } catch (queueErr) {
-            console.error(`[Cancel API] Error removing job from queue:`, queueErr.message);
         }
 
         res.status(200).json({ message: 'Active job cancelled successfully.' });
