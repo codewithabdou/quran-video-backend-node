@@ -1,6 +1,6 @@
 {
     "name": "backend-node",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "Node.js backend for Quran Reels",
     "main": "src/server.js",
     "type": "module",

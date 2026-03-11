@@ -80,11 +80,14 @@ Full documentation available at `http://localhost:5000/api-docs` when running.
 | :----- | :-------------------------- | :------------------------------------------------------------ |
 | `POST` | `/api/v1/generate-video`    | Queues a video generation job. Returns immediately.           |
 | `GET`  | `/api/v1/progress/:id`      | SSE stream for real-time progress updates & queue position.   |
+| `DELETE` | `/api/v1/generate-video/cancel` | Force cancels the active job for the requesting IP.     |
 | `GET`  | `/api/v1/download/:jobId`   | Downloads the generated MP4 video file.                       |
 | `GET`  | `/api/v1/backgrounds`       | Fetch curated or Pexels background videos.                    |
 | `POST` | `/api/v1/check-background`  | Verify if a background video is already cached on the server. |
 | `POST` | `/api/v1/upload-background` | Upload a custom background video for a generation job.        |
 | `POST` | `/api/v1/subscribe`         | Register for push notifications.                              |
+| `GET`  | `/api/v1/admin/jobs`        | Fetches all jobs in the queue (Experimental Admin Dashboard). |
+| `DELETE`| `/api/v1/admin/jobs/:jobId`| Instantly force-cancels a queued or active job by its ID.     |
 
 ## Testing
 
