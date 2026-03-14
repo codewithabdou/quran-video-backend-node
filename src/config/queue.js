@@ -169,6 +169,49 @@ export const isCancelled = async (requestId) => {
 };
 
 /**
+ * Increment the generation count for a specific user ID in the last hour
+ */
+export const incrementUserGenerationCount = async (userId) => {
+    if (!userId) return;
+    const client = redisConnection;
+    const key = `rate-limit:hourly:${userId}`;
+    const now = Date.now();
+    const oneHourAgo = now - 3600000;
+
+    // Use a Redis sorted set to store timestamps of generations
+    // Clean up old timestamps first
+    await client.zremrangebyscore(key, 0, oneHourAgo);
+    // Add current timestamp
+    await client.zadd(key, now, now);
+    // Set expiration for the whole set
+    await client.expire(key, 3600);
+};
+
+/**
+ * Check if a user has exceeded the hourly generation limit (10 per hour)
+ */
+export const checkUserRateLimit = async (userId) => {
+    if (!userId) return { allowed: true };
+    const client = redisConnection;
+    const key = `rate-limit:hourly:${userId}`;
+    const now = Date.now();
+    const oneHourAgo = now - 3600000;
+
+    // Clean up old timestamps
+    await client.zremrangebyscore(key, 0, oneHourAgo);
+    // Count remaining
+    const count = await client.zcard(key);
+    
+    const LIMIT = 10;
+    return {
+        allowed: count < LIMIT,
+        count,
+        remaining: Math.max(0, LIMIT - count),
+        limit: LIMIT
+    };
+};
+
+/**
  * Gracefully close connections
  */
 export const closeConnections = async () => {

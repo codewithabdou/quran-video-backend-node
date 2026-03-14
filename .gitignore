@@ -27,3 +27,5 @@ src/constants/pexels_videos_cache.json
 # Docker
 docker-compose.prod.yml
 docker-compose.yml
+
+/src/generated/prisma

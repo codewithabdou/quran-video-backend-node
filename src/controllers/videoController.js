@@ -14,13 +14,20 @@ export const generateVideoEndpoint = async (req, res) => {
     const requestId = requestData.request_id || uuidv4();
 
     try {
-        const result = await enqueueVideoGeneration(requestData, requestId, req.ip);
+        const { subscription, ...requestData } = req.body;
+        const result = await enqueueVideoGeneration(requestData, requestId, req.ip, req.user?.id || null, subscription);
 
         if (result.status === 'already_processing') {
             return res.status(202).json({
                 message: "Already processing",
                 jobId: result.jobId,
                 status: 'already_processing'
+            });
+        }
+
+        if (result.status === 'rate_limit_exceeded') {
+            return res.status(429).json({
+                error: { message: result.message }
             });
         }
 
@@ -308,7 +315,7 @@ export const cancelVideoEndpoint = async (req, res, next) => {
         const cancelledJobId = await cancelJobByIp(clientIp);
 
         if (!cancelledJobId) {
-            return res.status(404).json({ message: 'No active job found to cancel.' });
+            return res.status(200).json({ message: 'No active job found to cancel.' });
         }
 
         res.status(200).json({ message: 'Active job cancelled successfully.' });

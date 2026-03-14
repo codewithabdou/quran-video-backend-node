@@ -25,6 +25,16 @@ const swaggerOptions = {
                 description: 'Production server',
             }
         ],
+        components: {
+            securitySchemes: {
+                bearerAuth: {
+                    type: 'http',
+                    scheme: 'bearer',
+                    bearerFormat: 'JWT',
+                    description: 'JWT obtained from Google OAuth callback',
+                },
+            },
+        },
     },
     apis: ["./src/routes/*.js"], // Path to the API docs
 };

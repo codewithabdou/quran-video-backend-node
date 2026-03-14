@@ -29,7 +29,7 @@ export const concurrencyLimiter = async (req, res, next) => {
                 if (!isStale) {
                     return res.status(429).json({
                         error: {
-                            message: 'You already have a video being generated. Please wait for it to finish before starting a new one.',
+                            message: 'errorTooManyRequests',
                             existingJobId,
                             retryAfter: 'After current job completes',
                         },
