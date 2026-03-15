@@ -315,7 +315,7 @@ export const cancelVideoEndpoint = async (req, res, next) => {
         const cancelledJobId = await cancelJobByIp(clientIp);
 
         if (!cancelledJobId) {
-            return res.status(200).json({ message: 'No active job found to cancel.' });
+            return res.status(404).json({ message: 'No active job found to cancel.' });
         }
 
         res.status(200).json({ message: 'Active job cancelled successfully.' });

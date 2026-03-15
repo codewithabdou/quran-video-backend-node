@@ -16,6 +16,9 @@ jest.unstable_mockModule('../../config/queue.js', () => ({
     getJobResult: jest.fn(),
     getQueuePosition: jest.fn(),
     setActiveJob: jest.fn(),
+    getActiveJob: jest.fn(),
+    checkUserRateLimit: jest.fn().mockResolvedValue({ allowed: true }),
+    incrementUserGenerationCount: jest.fn(),
 }));
 
 // Set environment variables before importing service to ensure vapidConfigured is true
