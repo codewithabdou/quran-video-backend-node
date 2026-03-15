@@ -1,6 +1,7 @@
 import { Worker } from 'bullmq';
 import { VIDEO_QUEUE_NAME, redisConnection, setProgress, setJobResult, clearActiveJob, isCancelled } from './config/queue.js';
 import { coreGenerationLogic } from './services/videoService.js';
+import prisma from './config/database.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -25,19 +26,53 @@ export const abortJob = (jobId) => {
 };
 
 /**
+ * Save generation history to database
+ * Only saves if the job was initiated by an authenticated user
+ */
+const saveGenerationHistory = async (requestData, userId, status, startTime) => {
+    if (!userId) return; // Anonymous user — skip
+
+    try {
+        const duration = (Date.now() - startTime) / 1000; // seconds
+        await prisma.generationHistory.create({
+            data: {
+                userId,
+                surah: parseInt(requestData.surah),
+                ayahStart: parseInt(requestData.ayah_start),
+                ayahEnd: parseInt(requestData.ayah_end),
+                reciterId: requestData.reciter_id,
+                translationId: requestData.translation_id,
+                resolution: parseInt(requestData.resolution) || 720,
+                platform: requestData.platform || 'reel',
+                status,
+                duration: status === 'completed' ? duration : null,
+            },
+        });
+        console.log(`[Worker] Generation history saved for user ${userId} (status: ${status})`);
+    } catch (error) {
+        console.error('[Worker] Failed to save generation history:', error.message);
+        // Don't throw — history save failure shouldn't break the job
+    }
+};
+
+/**
  * BullMQ Worker for video generation jobs
  * Processes one job at a time (concurrency: 1) since FFmpeg is CPU-heavy
  */
 const worker = new Worker(
     VIDEO_QUEUE_NAME,
     async (job) => {
-        const { requestData, requestId, clientIp } = job.data;
+        const { requestData, requestId, clientIp, userId, subscription } = job.data;
+        const startTime = Date.now();
         console.log(`[Worker] Processing job ${job.id} (requestId: ${requestId})`);
+        console.log(`[Worker] Request Data:`, JSON.stringify(requestData, null, 2));
+        console.log(`[Worker] Push subscription status: ${subscription ? 'Present' : 'Missing'}`);
 
         // Check if this job was cancelled while waiting in queue
         if (await isCancelled(requestId)) {
             console.log(`[Worker] Job ${requestId} was cancelled before processing started. Skipping.`);
             if (clientIp) await clearActiveJob(clientIp);
+            await saveGenerationHistory(requestData, userId, 'cancelled', startTime);
             return { status: 'cancelled' };
         }
 
@@ -56,7 +91,7 @@ const worker = new Worker(
         try {
             await updateProgress(5, 'status_starting');
 
-            const result = await coreGenerationLogic(requestData, requestId, updateProgress, controller.signal);
+            const result = await coreGenerationLogic(requestData, requestId, updateProgress, controller.signal, subscription);
 
             // After generation completes, double-check cancellation before storing result
             if (controller.signal.aborted || await isCancelled(requestId)) {
@@ -72,6 +107,7 @@ const worker = new Worker(
                 }
                 if (clientIp) await clearActiveJob(clientIp);
                 activeControllers.delete(requestId);
+                await saveGenerationHistory(requestData, userId, 'cancelled', startTime);
                 return { status: 'cancelled' };
             }
 
@@ -87,6 +123,10 @@ const worker = new Worker(
 
             activeControllers.delete(requestId);
             console.log(`[Worker] Job ${job.id} completed. Output: ${result.path}`);
+
+            // Save successful generation to history
+            await saveGenerationHistory(requestData, userId, 'completed', startTime);
+
             return { path: result.path, status: 'completed' };
         } catch (error) {
             activeControllers.delete(requestId);
@@ -108,6 +148,7 @@ const worker = new Worker(
                     await clearActiveJob(clientIp);
                     console.log(`[Worker] Released concurrency lock for IP (cancelled): ${clientIp}`);
                 }
+                await saveGenerationHistory(requestData, userId, 'cancelled', startTime);
                 // Return gracefully instead of throwing so BullMQ doesn't mark as "failed"
                 return { status: 'cancelled' };
             }
@@ -120,6 +161,9 @@ const worker = new Worker(
                 await clearActiveJob(clientIp);
                 console.log(`[Worker] Released concurrency lock for IP (failed): ${clientIp}`);
             }
+
+            // Save failed generation to history
+            await saveGenerationHistory(requestData, userId, 'failed', startTime);
 
             throw error; // BullMQ will mark the job as failed
         }

@@ -1,0 +1,47 @@
+// Prisma schema for Quran Video Generator
+// Manages users (Google OAuth) and generation history
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+model User {
+  id        String   @id @default(uuid())
+  googleId  String   @unique
+  email     String   @unique
+  name      String
+  avatar    String?
+  role      Role     @default(USER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  generations GenerationHistory[]
+}
+
+model GenerationHistory {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  surah         Int
+  ayahStart     Int
+  ayahEnd       Int
+  reciterId     String
+  translationId String
+  resolution    Int      @default(720)
+  platform      String   @default("reel")
+  status        String   // completed, failed, cancelled
+  duration      Float?   // rendering time in seconds
+  createdAt     DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+}

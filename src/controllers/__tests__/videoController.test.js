@@ -13,7 +13,10 @@ jest.unstable_mockModule('../../config/queue.js', () => ({
     getActiveJob: jest.fn(),
     clearActiveJob: jest.fn(),
     deleteProgress: jest.fn(),
-    videoQueue: { getJob: jest.fn() },
+    videoQueue: { 
+        getJob: jest.fn(),
+        getJobs: jest.fn()
+    },
     setCancelled: jest.fn(),
     setProgress: jest.fn(),
     setActiveJob: jest.fn(),
@@ -25,8 +28,16 @@ jest.unstable_mockModule('../../worker.js', () => ({
 }));
 
 // Dynamic imports are required after unstable_mockModule
-const { generateVideoEndpoint, downloadVideoEndpoint } = await import('../videoController.js');
+const { 
+    generateVideoEndpoint, 
+    downloadVideoEndpoint, 
+    subscribe: subscribeEndpoint, 
+    cancelVideoEndpoint,
+    getAdminJobsEndpoint,
+    cancelAdminJobEndpoint
+} = await import('../videoController.js');
 const videoService = await import('../../services/videoService.js');
+const { getActiveJob, videoQueue } = await import('../../config/queue.js');
 
 describe('Video Controller', () => {
     let req, res;
@@ -40,7 +51,8 @@ describe('Video Controller', () => {
                 ayah_end: 7,
                 reciter_id: 'ar.alafasy',
                 translation_id: 'en.sahih'
-            }
+            },
+            user: undefined
         };
         res = {
             status: jest.fn().mockReturnThis(),
@@ -59,7 +71,9 @@ describe('Video Controller', () => {
 
             await generateVideoEndpoint(req, res);
 
-            expect(videoService.enqueueVideoGeneration).toHaveBeenCalledWith(req.body, expect.any(String), '127.0.0.1');
+            expect(videoService.enqueueVideoGeneration).toHaveBeenCalledWith(
+                req.body, expect.any(String), '127.0.0.1', null, undefined
+            );
             expect(res.status).toHaveBeenCalledWith(202);
             expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
                 jobId: 'test-job-id',
@@ -100,6 +114,74 @@ describe('Video Controller', () => {
             await downloadVideoEndpoint(req, res);
 
             expect(res.status).toHaveBeenCalledWith(404);
+        });
+    });
+
+    describe('subscribe', () => {
+        test('should call subscribeToProgress and return 201', async () => {
+            req.body = { requestId: 'uuid', subscription: { endpoint: 'url' } };
+            
+            await subscribeEndpoint(req, res);
+
+            expect(videoService.subscribeToProgress).toHaveBeenCalledWith('uuid', { endpoint: 'url' });
+            expect(res.status).toHaveBeenCalledWith(201);
+        });
+    });
+
+    describe('cancelVideoEndpoint', () => {
+        test('should return 200 if job is cancelled', async () => {
+            req.ip = '127.0.0.1';
+            const { getActiveJob } = await import('../../config/queue.js');
+            getActiveJob.mockResolvedValue('test-job-id');
+
+            await cancelVideoEndpoint(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(200);
+            expect(res.json).toHaveBeenCalledWith({ message: 'Active job cancelled successfully.' });
+        });
+
+        test('should return 404 if no active job', async () => {
+            req.ip = '127.0.0.1';
+            const { getActiveJob } = await import('../../config/queue.js');
+            getActiveJob.mockResolvedValue(null);
+
+            await cancelVideoEndpoint(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(404);
+        });
+    });
+
+    describe('Admin Job Endpoints', () => {
+        test('getAdminJobsEndpoint should return job list', async () => {
+            const { videoQueue } = await import('../../config/queue.js');
+            const mockJob = { 
+                id: '1', 
+                name: 'test', 
+                data: { requestData: {} },
+                timestamp: Date.now(),
+                getState: jest.fn().mockResolvedValue('active')
+            };
+            videoQueue.getJobs.mockResolvedValue([mockJob]);
+
+            await getAdminJobsEndpoint(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(200);
+            expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ total: 1 }));
+        });
+
+        test('cancelAdminJobEndpoint should cancel specific job', async () => {
+            req.params = { jobId: 'job-123' };
+            const { videoQueue } = await import('../../config/queue.js');
+            const mockJob = { 
+                data: { clientIp: '1.1.1.1' },
+                getState: jest.fn().mockResolvedValue('active'),
+                remove: jest.fn().mockResolvedValue(true)
+            };
+            videoQueue.getJob.mockResolvedValue(mockJob);
+
+            await cancelAdminJobEndpoint(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(200);
         });
     });
 });

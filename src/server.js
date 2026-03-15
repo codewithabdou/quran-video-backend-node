@@ -1,6 +1,11 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+
+dotenv.config();
+
+import passport from 'passport';
+import session from 'express-session';
 import apiRoutes from './routes/api.js';
 import fs from 'fs';
 import path from 'path';
@@ -11,11 +16,11 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { securityHeaders, configureCORS } from './middleware/security.js';
 import { apiLimiter } from './middleware/rateLimiter.js';
 import { closeConnections } from './config/queue.js';
+import configurePassport from './config/passport.js';
+import prisma from './config/database.js';
 
 // Import worker (starts it as a side-effect)
 import worker from './worker.js';
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -29,6 +34,19 @@ app.use(cors(configureCORS()));
 // Body parsing
 app.use(express.json({ limit: '10mb' })); // Limit payload size
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Session (needed for Passport OAuth flow)
+app.use(session({
+    secret: process.env.JWT_SECRET || 'session_secret',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { secure: process.env.NODE_ENV === 'production' },
+}));
+
+// Passport initialization
+configurePassport();
+app.use(passport.initialize());
+app.use(passport.session());
 
 // Trust proxy (for rate limiting behind reverse proxy)
 app.set('trust proxy', 1);
@@ -65,6 +83,7 @@ const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`Redis URL: ${process.env.REDIS_URL || 'redis://localhost:6379'}`);
+    console.log(`Database: ${process.env.DATABASE_URL ? 'Connected' : 'Not configured'}`);
 });
 
 // Graceful shutdown
@@ -90,6 +109,14 @@ const shutdown = async (signal) => {
         console.log('Redis connections closed');
     } catch (err) {
         console.error('Error closing Redis:', err);
+    }
+
+    // Disconnect Prisma
+    try {
+        await prisma.$disconnect();
+        console.log('Database connection closed');
+    } catch (err) {
+        console.error('Error disconnecting Prisma:', err);
     }
 
     process.exit(0);

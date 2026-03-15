@@ -22,10 +22,13 @@ RUN npm ci
 # Copy source code
 COPY . .
 
+# Generate Prisma Client (uses fallback in prisma.config.ts for build time)
+RUN DATABASE_URL="postgresql://postgres:postgres@localhost:5432/postgres" npx prisma generate
+
 # ---- Production Stage ----
 FROM node:20-slim AS production
 
-# Install runtime dependencies: ffmpeg + canvas native libs
+# Install runtime dependencies: ffmpeg + canvas native libs + drawtext filter deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libcairo2 \
@@ -34,6 +37,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg62-turbo \
     libgif7 \
     librsvg2-2 \
+    libfreetype6 \
+    libfontconfig1 \
+    libfribidi0 \
     fonts-noto-core \
     fonts-noto-extra \
     && rm -rf /var/lib/apt/lists/*
@@ -49,6 +55,9 @@ RUN npm ci --omit=dev
 
 # Copy built native modules from build stage (canvas needs them)
 COPY --from=build /app/node_modules/canvas /app/node_modules/canvas
+
+# Copy generated Prisma client from build stage
+COPY --from=build /app/node_modules/.prisma /app/node_modules/.prisma
 
 # Copy source code
 COPY . .

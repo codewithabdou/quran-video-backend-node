@@ -15,17 +15,23 @@ import { downloadFile, cleanupTempDir } from '../utils/fileOps.js';
 import { createSubtitleImage, createOutroImage } from '../utils/textGen.js';
 import webPush from 'web-push';
 import dotenv from 'dotenv';
-import { videoQueue, getProgressData, setProgress, deleteProgress, getJobResult, getQueuePosition, setActiveJob } from '../config/queue.js';
+import { videoQueue, getProgressData, setProgress, deleteProgress, getJobResult, getQueuePosition, setActiveJob, getActiveJob, checkUserRateLimit, incrementUserGenerationCount } from '../config/queue.js';
 
 dotenv.config();
 
 // Configure web-push
+let vapidConfigured = false;
 if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
-    webPush.setVapidDetails(
-        process.env.VAPID_EMAIL,
-        process.env.VAPID_PUBLIC_KEY,
-        process.env.VAPID_PRIVATE_KEY
-    );
+    try {
+        webPush.setVapidDetails(
+            process.env.VAPID_EMAIL || 'mailto:example@example.com',
+            process.env.VAPID_PUBLIC_KEY,
+            process.env.VAPID_PRIVATE_KEY
+        );
+        vapidConfigured = true;
+    } catch (err) {
+        console.warn('[Push] VAPID configuration failed:', err.message);
+    }
 }
 
 // Subscription store (kept in-memory — only used for push notifications)
@@ -72,8 +78,8 @@ export const getProgress = (requestId, callback, req) => {
  * Add a video generation job to the queue (non-blocking)
  * Returns the job ID immediately
  */
-export const enqueueVideoGeneration = async (requestData, requestId, clientIp) => {
-    // Check if this request is already being processed
+export const enqueueVideoGeneration = async (requestData, requestId, clientIp, userId = null, subscription = null) => {
+    // 1. Check if this specific request is already being processed
     const existingProgress = await getProgressData(requestId);
     if (existingProgress
         && existingProgress.status !== 'status_completed'
@@ -88,19 +94,50 @@ export const enqueueVideoGeneration = async (requestData, requestId, clientIp) =
         console.log(`[Queue] Job ${requestId} is stale. Allowing re-enqueue.`);
     }
 
+    // 1.5 Check for ANY active jobs by User ID (preferred) or IP (concurrency check)
+    const lockKey = userId || clientIp;
+    if (lockKey) {
+        const activeJobId = await getActiveJob(lockKey);
+        if (activeJobId && activeJobId !== requestId) {
+            const job = await videoQueue.getJob(activeJobId);
+            if (job) {
+                const state = await job.getState();
+                if (state === 'active' || state === 'waiting' || state === 'delayed') {
+                    return { status: 'already_processing', jobId: activeJobId };
+                }
+            }
+        }
+    }
+
+    // 2. Check Hourly Rate Limit (Volume check: 10 per hour per user)
+    if (userId) {
+        const rateLimit = await checkUserRateLimit(userId);
+        if (!rateLimit.allowed) {
+            return { 
+                status: 'rate_limit_exceeded', 
+                message: `error_rate_limit|${rateLimit.limit}` 
+            };
+        }
+    }
+
     // Set initial progress
     await setProgress(requestId, { status: 'status_queued', percentage: 0 });
 
     // Add job to BullMQ queue (include clientIp so the worker can clear the lock)
     const job = await videoQueue.add(
         'generate-video',
-        { requestData, requestId, clientIp },
+        { requestData, requestId, clientIp, userId, subscription },
         { jobId: requestId }
     );
 
-    // Register the IP-to-job mapping for concurrency limiting
-    if (clientIp) {
-        await setActiveJob(clientIp, requestId);
+    // Register the locking mechanism for concurrency
+    if (lockKey) {
+        await setActiveJob(lockKey, requestId);
+    }
+
+    // Increment the hourly count for volume limiting
+    if (userId) {
+        await incrementUserGenerationCount(userId);
     }
 
     console.log(`[Queue] Job ${job.id} added to queue for requestId: ${requestId}`);
@@ -117,9 +154,9 @@ export const checkJobResult = async (requestId) => {
 /**
  * Send push notification on completion (called by the worker's updateProgress)
  */
-export const sendCompletionNotification = (requestId) => {
-    const subscription = subscriptionStore.get(requestId);
-    if (subscription) {
+export const sendCompletionNotification = (requestId, providedSubscription = null) => {
+    const subscription = providedSubscription || subscriptionStore.get(requestId);
+    if (subscription && subscription.endpoint && vapidConfigured) {
         const payload = JSON.stringify({
             title: 'Video Generation Complete!',
             body: `Your Quran video is ready.`,
@@ -135,7 +172,7 @@ export const sendCompletionNotification = (requestId) => {
  * Core video generation logic — exported for the worker to import
  * This is the heavy FFmpeg work that runs inside the BullMQ worker
  */
-export const coreGenerationLogic = async (data, requestId, updateProgress, abortSignal) => {
+export const coreGenerationLogic = async (data, requestId, updateProgress, abortSignal, subscription = null) => {
     const { surah, ayah_start, ayah_end, reciter_id, translation_id, background_url, resolution = 720, platform = 'reel' } = data;
 
     const tempDir = path.join(process.cwd(), 'temp', requestId);
@@ -209,15 +246,16 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
         const subtitleImages = [];
         let totalDuration = 0;
 
-        const targetWidth = resolution;
-        const targetHeight = platform === 'reel' ? Math.floor(resolution * (16 / 9)) : Math.floor(resolution * (9 / 16));
+        const targetWidth = parseInt(resolution);
+        const targetHeight = platform === 'reel' ? Math.floor(targetWidth * (16 / 9)) : Math.floor(targetWidth * (9 / 16));
         const width = targetWidth - (targetWidth % 2);
         const height = targetHeight - (targetHeight % 2);
 
         await updateProgress(30, 'status_processing_audio');
 
-        // Parallelize downloads, duration extraction, and subtitle generation
-        await Promise.all(ayahs.map(async (ayah) => {
+        // Sequential processing to allow early exit on duration limit
+        const MAX_DURATION = 180; // 3 minutes
+        for (const ayah of ayahs) {
             const audioFilename = `audio_${ayah.number}.mp3`;
             const audioPath = path.join(tempDir, audioFilename);
             const dlSuccess = await downloadFile(ayah.audio, audioPath);
@@ -225,6 +263,15 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
             ayah.audioPath = audioPath;
 
             ayah.duration = await getMediaDuration(audioPath);
+            
+            // Sequential timing calculation
+            ayah.startTime = totalDuration;
+            totalDuration += ayah.duration;
+
+            // Early exit check
+            if (totalDuration > MAX_DURATION) {
+                throw new Error(`error_duration_limit|${Math.floor(totalDuration)}`);
+            }
 
             const subFilename = `sub_${ayah.number}.png`;
             const subPath = path.join(tempDir, subFilename);
@@ -237,12 +284,6 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
                 englishFontSize: width * 0.04
             });
             ayah.subPath = subPath;
-        }));
-
-        // Compute sequential timings
-        for (const ayah of ayahs) {
-            ayah.startTime = totalDuration;
-            totalDuration += ayah.duration;
 
             audioPaths.push(ayah.audioPath);
             subtitleImages.push({ path: ayah.subPath, start: ayah.startTime, end: ayah.startTime + ayah.duration });
@@ -301,7 +342,10 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
 
         return new Promise((resolve, reject) => {
             let settled = false;
+            // 2.7 FFmpeg Assembly
             const command = ffmpeg();
+            
+            // Loop the background video infinitely if it's shorter than the audio
             command.input(bgPath).inputOptions(['-stream_loop', '-1']);
 
             let audioInputsStart = 1;
@@ -344,7 +388,8 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
             const urlTextEscaped = 'https\\://quran-video-generator.netlify.app';
             // Add fade-out to the main video sequence
             const fadeOutStart = Math.max(0, totalDuration - 0.5); // Start fade 0.5s before end
-            filter.push(`[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},trim=duration=${totalDuration},drawtext=fontfile='${fontFileStr}':text='${urlTextEscaped}':fontcolor=white@0.7:fontsize=${Math.floor(width * 0.035)}:x=w-tw-20:y=h-th-20,fade=t=out:st=${fadeOutStart}:d=0.5:color=black[bg]`);
+            // Use Lanczos for high-quality scaling and setsar=1 to ensure proper aspect ratio
+            filter.push(`[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1,trim=duration=${totalDuration},drawtext=fontfile='${fontFileStr}':text='${urlTextEscaped}':fontcolor=white@0.7:fontsize=${Math.floor(width * 0.035)}:x=w-tw-20:y=h-th-20,fade=t=out:st=${fadeOutStart}:d=0.5:color=black[bg]`);
 
             let currentVideoLabel = '[bg]';
             subtitleImages.forEach((img, i) => {
@@ -371,13 +416,23 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
                     '-map', '[finalv]',
                     '-map', '[finala]',
                     '-c:v', 'libx264',
-                    '-c:a', 'aac',
+                    '-preset', 'medium',
+                    '-crf', '18',
                     '-pix_fmt', 'yuv420p',
+                    '-c:a', 'aac',
+                    '-b:a', '192k',
+                    '-s', `${width}x${height}`,
                     '-threads', '2'
                 ])
                 .output(outputPath)
                 .on('progress', async (progress) => {
-                    const p = progress.percent ? Math.min(99, 50 + (progress.percent / 2)) : 75;
+                    // Manual time-based progress calculation: 50% + (current_time / total_duration * 50%)
+                    let p = 75;
+                    if (progress.timemark && totalDuration > 0) {
+                        const parts = progress.timemark.split(':');
+                        const seconds = (+parts[0]) * 60 * 60 + (+parts[1]) * 60 + (+parts[2]);
+                        p = 50 + Math.min(49, (seconds / (totalDuration + outroDuration)) * 50);
+                    }
                     await updateProgress(Math.floor(p), 'status_rendering');
                 })
                 .on('end', () => {
@@ -390,7 +445,7 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
                         }
 
                         // Send push notification
-                        sendCompletionNotification(requestId);
+                        sendCompletionNotification(requestId, subscription);
 
                         resolve({ path: outputPath, status: 'completed' });
                     }, 1000);
