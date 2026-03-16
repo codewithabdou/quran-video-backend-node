@@ -422,7 +422,7 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
                     '-c:a', 'aac',
                     '-b:a', '192k',
                     '-s', `${width}x${height}`,
-                    '-threads', '2'
+                    '-threads', '4'
                 ])
                 .output(outputPath)
                 .on('progress', async (progress) => {
