@@ -201,34 +201,46 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
 
     try {
-        // 1. Fetch Quran Data
+        // 1. Fetch Quran Data (Local)
         await updateProgress(10, 'status_fetching');
-        const quranUrl = `http://api.alquran.cloud/v1/surah/${surah}/editions/${reciter_id},${translation_id}`;
-        const response = await axios.get(quranUrl);
-        const editions = response.data.data;
+        const dataDir = path.join(process.cwd(), 'data');
+        const arabicPath = path.join(dataDir, 'text', 'quran-arabic.json');
+        const englishPath = path.join(dataDir, 'text', 'quran-en.json');
 
-        // Locate editions
-        const arabicEdition = editions.find(e => e.edition.identifier === reciter_id);
-        const englishEdition = editions.find(e => e.edition.identifier === translation_id);
+        if (!fs.existsSync(arabicPath) || !fs.existsSync(englishPath)) {
+            throw new Error(`Local text data missing. Please run the download scripts.`);
+        }
 
-        if (!arabicEdition || !englishEdition) {
-            throw new Error("Editions not found");
+        const arabicData = JSON.parse(fs.readFileSync(arabicPath, 'utf8'));
+        const englishData = JSON.parse(fs.readFileSync(englishPath, 'utf8'));
+
+        const arabicSurah = arabicData.surahs.find(s => s.number === parseInt(surah));
+        const englishSurah = englishData.surahs.find(s => s.number === parseInt(surah));
+
+        if (!arabicSurah || !englishSurah) {
+            throw new Error("Surah not found in local data");
         }
 
         const ayahs = [];
-        for (let i = 0; i < arabicEdition.ayahs.length; i++) {
-            const num = arabicEdition.ayahs[i].numberInSurah;
+        for (let i = 0; i < arabicSurah.ayahs.length; i++) {
+            const num = arabicSurah.ayahs[i].numberInSurah;
             if (num >= ayah_start && num <= ayah_end) {
+                // Compute local audio path: data/audio/[reciter_id]/[surah][ayah].mp3
+                const audioFilename = `${String(surah).padStart(3, '0')}${String(num).padStart(3, '0')}.mp3`;
+                const audioLocalPath = path.join(dataDir, 'audio', reciter_id, audioFilename);
+                const audioFallbackUrl = `https://everyayah.com/data/${reciter_id}/${audioFilename}`;
+                
                 ayahs.push({
                     number: num,
-                    arabic: arabicEdition.ayahs[i].text,
-                    english: englishEdition.ayahs[i].text,
-                    audio: arabicEdition.ayahs[i].audio || `https://everyayah.com/data/${reciter_id}/${String(surah).padStart(3, '0')}${String(num).padStart(3, '0')}.mp3`
+                    arabic: arabicSurah.ayahs[i].text,
+                    english: englishSurah.ayahs[i].text,
+                    audioPath: audioLocalPath,
+                    audioFallbackUrl: audioFallbackUrl
                 });
             }
         }
 
-        // 2. Download Assets
+        // 2. Prepare Background
         await updateProgress(20, 'status_downloading');
         const bgPath = path.join(tempDir, 'background.mp4');
         const fallbackBgPath = path.join(process.cwd(), 'fallback video', 'default_background.mp4');
@@ -252,9 +264,7 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
         } else {
             // It's a local file path (e.g., from the /upload-background endpoint / cache)
             if (fs.existsSync(background_url)) {
-                // Copy the cached file to the temp directory where the composition happens
                 fs.copyFileSync(background_url, bgPath);
-                // We deliberately do NOT delete the original `background_url` here anymore so it persists as a cache
             } else {
                 if (fs.existsSync(fallbackBgPath)) {
                     fs.copyFileSync(fallbackBgPath, bgPath);
@@ -272,44 +282,47 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
         let width, height;
         
         if (platform === 'reel') {
-            // For vertical (9:16), resolution refers to the width (e.g., 720px wide)
             width = requestedRes;
             height = Math.floor(width * (16 / 9));
         } else {
-            // For horizontal (16:9), resolution refers to the height (e.g., 720px high)
             height = requestedRes;
             width = Math.floor(height * (16 / 9));
         }
 
-        // Ensure dimensions are even (required by most encoders)
         width = width - (width % 2);
         height = height - (height % 2);
 
         await updateProgress(30, 'status_processing_audio');
 
-        // Sequential processing to allow early exit on duration limit
         const MAX_DURATION = 180; // 3 minutes
         for (const ayah of ayahs) {
-            const audioFilename = `audio_${ayah.number}.mp3`;
-            const audioPath = path.join(tempDir, audioFilename);
-            const dlSuccess = await downloadFile(ayah.audio, audioPath);
-            if (!dlSuccess) throw new Error(`Failed to download audio for ayah ${ayah.number}`);
-            ayah.audioPath = audioPath;
+            if (!fs.existsSync(ayah.audioPath)) {
+                // Cache miss - fallback to downloading and storing it in the persistent data volume permanently
+                console.log(`[Cache Miss] Local audio missing for Ayah ${ayah.number}. Downloading...`);
+                
+                // Ensure the directory exists first
+                const targetDir = path.dirname(ayah.audioPath);
+                if (!fs.existsSync(targetDir)) {
+                    fs.mkdirSync(targetDir, { recursive: true });
+                }
 
-            ayah.duration = await getMediaDuration(audioPath);
+                const dlSuccess = await downloadFile(ayah.audioFallbackUrl, ayah.audioPath);
+                if (!dlSuccess || !fs.existsSync(ayah.audioPath)) {
+                    throw new Error(`Failed to fallback download audio for Ayah ${ayah.number}. Path: ${ayah.audioPath}`);
+                }
+            }
+
+            ayah.duration = await getMediaDuration(ayah.audioPath);
             
-            // Sequential timing calculation
             ayah.startTime = totalDuration;
             totalDuration += ayah.duration;
 
-            // Early exit check
             if (totalDuration > MAX_DURATION) {
                 throw new Error(`error_duration_limit|${Math.floor(totalDuration)}`);
             }
 
             const subFilename = `sub_${ayah.number}.png`;
             const subPath = path.join(tempDir, subFilename);
-            // Use the smaller dimension as the base for font scaling to ensure consistency across aspect ratios
             const baseSize = Math.min(width, height);
             
             await createSubtitleImage(ayah.arabic, ayah.english, subPath, {
@@ -327,23 +340,24 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
         }
 
         // 2.5 Generate Outro Assets
-        const outroAudioPath = path.join(tempDir, 'outro_audio.mp3');
-        // Use the user's requested reciter for the outro audio instead of defaulting to ar.alafasy
-        const outroAudioUrl = `http://api.alquran.cloud/v1/ayah/73:4/${reciter_id}`;
+        // Use local outro audio: Surah Muzammil (73), Ayah 4
+        const localOutroAudioPath = path.join(dataDir, 'audio', reciter_id, '073004.mp3');
         let hasOutroAudio = false;
-        try {
-            const outroRes = await axios.get(outroAudioUrl);
-            const outroMp3 = outroRes.data.data.audio;
-            hasOutroAudio = await downloadFile(outroMp3, outroAudioPath);
-        } catch (e) {
-            console.error("Failed to fetch outro audio:", e.message);
+        let outroDuration = 5;
+
+        if (!fs.existsSync(localOutroAudioPath)) {
+             console.log(`[Cache Miss] Local outro audio missing. Downloading...`);
+             const targetDir = path.dirname(localOutroAudioPath);
+             if (!fs.existsSync(targetDir)) {
+                 fs.mkdirSync(targetDir, { recursive: true });
+             }
+             const fallbackUrl = `https://everyayah.com/data/${reciter_id}/073004.mp3`;
+             await downloadFile(fallbackUrl, localOutroAudioPath);
         }
 
-        let outroDuration = 5;
-        if (hasOutroAudio && fs.existsSync(outroAudioPath)) {
-            outroDuration = await getMediaDuration(outroAudioPath);
-        } else {
-            hasOutroAudio = false;
+        if (fs.existsSync(localOutroAudioPath)) {
+            hasOutroAudio = true;
+            outroDuration = await getMediaDuration(localOutroAudioPath);
         }
 
         const outroSubPath = path.join(tempDir, 'outro_sub.png');
@@ -397,7 +411,7 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
             let outroAudioIndex = -1;
             if (hasOutroAudio) {
                 outroAudioIndex = outroImageIndex + 1;
-                command.input(outroAudioPath);
+                command.input(localOutroAudioPath);
             }
 
             // Listen for abort signal to kill FFmpeg

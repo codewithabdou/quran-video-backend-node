@@ -11,6 +11,7 @@ temp/
 outputs/
 logs/
 *.log
+data/
 
 # Testing
 coverage/

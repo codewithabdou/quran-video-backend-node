@@ -12,6 +12,7 @@ outputs/
 logs/
 *.log
 uploads/
+data/
 
 # Testing
 coverage/

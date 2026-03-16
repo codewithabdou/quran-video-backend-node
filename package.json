@@ -11,7 +11,8 @@
         "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
         "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
         "env:dev": "copy .env.dev .env",
-        "env:prod": "copy .env.prod .env"
+        "env:prod": "copy .env.prod .env",
+        "download-data": "node src/scripts/downloadAssets.js"
     },
     "dependencies": {
         "@prisma/adapter-pg": "^7.5.0",
