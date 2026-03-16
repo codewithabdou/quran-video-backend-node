@@ -8,6 +8,7 @@ jest.unstable_mockModule('../../config/database.js', () => ({
             count: jest.fn(),
             update: jest.fn(),
             delete: jest.fn(),
+            findUnique: jest.fn(),
         },
         generationHistory: {
             count: jest.fn(),
@@ -84,6 +85,7 @@ describe('Admin Controller', () => {
         it('should update user role', async () => {
             req.params.id = 'user-1';
             req.body.role = 'ADMIN';
+            prisma.user.findUnique.mockResolvedValue({ id: 'user-1', email: 'u1@ex.com', role: 'USER' });
             prisma.user.update.mockResolvedValue({ id: 'user-1', email: 'u1@ex.com', role: 'ADMIN' });
 
             await updateUserRole(req, res);
@@ -100,6 +102,7 @@ describe('Admin Controller', () => {
         it('should prevent self-demotion', async () => {
             req.params.id = 'admin-1';
             req.body.role = 'USER';
+            prisma.user.findUnique.mockResolvedValue({ id: 'admin-1', email: 'admin@example.com', role: 'ADMIN' });
 
             await updateUserRole(req, res);
 
@@ -130,6 +133,7 @@ describe('Admin Controller', () => {
     describe('deleteUser', () => {
         it('should delete user', async () => {
             req.params.id = 'user-1';
+            prisma.user.findUnique.mockResolvedValue({ id: 'user-1', email: 'deleted@ex.com', role: 'USER' });
             prisma.user.delete.mockResolvedValue({ email: 'deleted@ex.com' });
 
             await deleteUser(req, res);
@@ -140,6 +144,7 @@ describe('Admin Controller', () => {
 
         it('should prevent self-deletion', async () => {
             req.params.id = 'admin-1';
+            prisma.user.findUnique.mockResolvedValue({ id: 'admin-1', email: 'admin@example.com', role: 'ADMIN' });
 
             await deleteUser(req, res);
 

@@ -62,7 +62,7 @@ const saveGenerationHistory = async (requestData, userId, status, startTime) => 
 const worker = new Worker(
     VIDEO_QUEUE_NAME,
     async (job) => {
-        const { requestData, requestId, clientIp, userId, subscription } = job.data;
+        const { requestData, requestId, clientIp, userId, subscription, language } = job.data;
         const startTime = Date.now();
         console.log(`[Worker] Processing job ${job.id} (requestId: ${requestId})`);
         console.log(`[Worker] Request Data:`, JSON.stringify(requestData, null, 2));
@@ -91,7 +91,7 @@ const worker = new Worker(
         try {
             await updateProgress(5, 'status_starting');
 
-            const result = await coreGenerationLogic(requestData, requestId, updateProgress, controller.signal, subscription);
+            const result = await coreGenerationLogic(requestData, requestId, updateProgress, controller.signal, subscription, language);
 
             // After generation completes, double-check cancellation before storing result
             if (controller.signal.aborted || await isCancelled(requestId)) {

@@ -131,7 +131,7 @@ export const enqueueVideoGeneration = async (requestData, requestId, clientIp, u
     // Add job to BullMQ queue (include clientIp so the worker can clear the lock)
     const job = await videoQueue.add(
         'generate-video',
-        { requestData, requestId, clientIp, userId, subscription },
+        { requestData, requestId, clientIp, userId, subscription, language: requestData.language || 'en' },
         { jobId: requestId }
     );
 
@@ -159,13 +159,30 @@ export const checkJobResult = async (requestId) => {
 /**
  * Send push notification on completion (called by the worker's updateProgress)
  */
-export const sendCompletionNotification = (requestId, providedSubscription = null) => {
+export const sendCompletionNotification = (requestId, providedSubscription = null, language = 'en') => {
     const subscription = providedSubscription || subscriptionStore.get(requestId);
     if (subscription && subscription.endpoint && vapidConfigured) {
+        const notifications = {
+            en: {
+                title: 'Video Generation Complete!',
+                body: `Your Quran video is ready.`,
+            },
+            fr: {
+                title: 'Génération Vidéo Terminée !',
+                body: `Votre vidéo du Coran est prête.`,
+            },
+            ar: {
+                title: 'تم إنشاء الفيديو بنجاح!',
+                body: `مقطع الفيديو القرآني الخاص بك جاهز.`,
+            }
+        };
+
+        const notification = notifications[language] || notifications.en;
+
         const payload = JSON.stringify({
-            title: 'Video Generation Complete!',
-            body: `Your Quran video is ready.`,
-            icon: '/icon.png'
+            title: notification.title,
+            body: notification.body,
+            icon: '/logo.png'
         });
         webPush.sendNotification(subscription, payload)
             .catch(err => console.error("Error sending notification:", err))
@@ -177,7 +194,7 @@ export const sendCompletionNotification = (requestId, providedSubscription = nul
  * Core video generation logic — exported for the worker to import
  * This is the heavy FFmpeg work that runs inside the BullMQ worker
  */
-export const coreGenerationLogic = async (data, requestId, updateProgress, abortSignal, subscription = null) => {
+export const coreGenerationLogic = async (data, requestId, updateProgress, abortSignal, subscription = null, language = 'en') => {
     const { surah, ayah_start, ayah_end, reciter_id, translation_id, background_url, resolution = 720, platform = 'reel' } = data;
 
     const tempDir = path.join(process.cwd(), 'temp', requestId);
@@ -251,10 +268,22 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
         const subtitleImages = [];
         let totalDuration = 0;
 
-        const targetWidth = parseInt(resolution);
-        const targetHeight = platform === 'reel' ? Math.floor(targetWidth * (16 / 9)) : Math.floor(targetWidth * (9 / 16));
-        const width = targetWidth - (targetWidth % 2);
-        const height = targetHeight - (targetHeight % 2);
+        const requestedRes = parseInt(resolution);
+        let width, height;
+        
+        if (platform === 'reel') {
+            // For vertical (9:16), resolution refers to the width (e.g., 720px wide)
+            width = requestedRes;
+            height = Math.floor(width * (16 / 9));
+        } else {
+            // For horizontal (16:9), resolution refers to the height (e.g., 720px high)
+            height = requestedRes;
+            width = Math.floor(height * (16 / 9));
+        }
+
+        // Ensure dimensions are even (required by most encoders)
+        width = width - (width % 2);
+        height = height - (height % 2);
 
         await updateProgress(30, 'status_processing_audio');
 
@@ -280,13 +309,16 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
 
             const subFilename = `sub_${ayah.number}.png`;
             const subPath = path.join(tempDir, subFilename);
+            // Use the smaller dimension as the base for font scaling to ensure consistency across aspect ratios
+            const baseSize = Math.min(width, height);
+            
             await createSubtitleImage(ayah.arabic, ayah.english, subPath, {
                 width: width,
                 height: height,
                 arabicFontPath: path.join(process.cwd(), 'fonts/Nabi.ttf'),
                 englishFontPath: path.join(process.cwd(), 'fonts/arial.ttf'),
-                arabicFontSize: width * 0.06,
-                englishFontSize: width * 0.04
+                arabicFontSize: baseSize * 0.08,
+                englishFontSize: baseSize * 0.045
             });
             ayah.subPath = subPath;
 
@@ -450,7 +482,7 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
                         }
 
                         // Send push notification
-                        sendCompletionNotification(requestId, subscription);
+                        sendCompletionNotification(requestId, subscription, language);
 
                         resolve({ path: outputPath, status: 'completed' });
                     }, 1000);

@@ -28,9 +28,9 @@ const configurePassport = () => {
                         return done(new Error('No email found in Google profile'), null);
                     }
 
-                    // Check if this is the very first user (auto-admin)
-                    const userCount = await prisma.user.count();
-                    const isFirstUser = userCount === 0;
+                    // Specific admin emails that are always promoted
+                    const SUPER_ADMIN_EMAIL = 'kk_habouche@esi.dz';
+                    const isSuperAdmin = email === SUPER_ADMIN_EMAIL;
 
                     // Find or create user
                     let user = await prisma.user.findUnique({
@@ -38,12 +38,13 @@ const configurePassport = () => {
                     });
 
                     if (user) {
-                        // Update name/avatar on each login
+                        // Update name/avatar on each login, and ensure super admin keeps role
                         user = await prisma.user.update({
                             where: { id: user.id },
                             data: {
                                 name: profile.displayName,
                                 avatar: avatar || user.avatar,
+                                ...(isSuperAdmin ? { role: 'ADMIN' } : {}),
                             },
                         });
                     } else {
@@ -53,10 +54,10 @@ const configurePassport = () => {
                                 email,
                                 name: profile.displayName,
                                 avatar,
-                                role: isFirstUser ? 'ADMIN' : 'USER',
+                                role: isSuperAdmin ? 'ADMIN' : 'USER',
                             },
                         });
-                        console.log(`[Auth] New user created: ${user.email}${isFirstUser ? ' (AUTO-ADMIN)' : ''}`);
+                        console.log(`[Auth] New user created: ${user.email}${ isSuperAdmin ? ' (AUTO-ADMIN)' : ''}`);
                     }
 
                     return done(null, user);

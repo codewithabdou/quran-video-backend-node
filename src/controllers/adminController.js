@@ -68,9 +68,21 @@ export const updateUserRole = async (req, res) => {
             return res.status(400).json({ error: 'Role must be USER or ADMIN.' });
         }
 
-        // Prevent self-demotion
-        if (id === req.user.id && role !== 'ADMIN') {
-            return res.status(400).json({ error: 'You cannot demote yourself.' });
+        const userToUpdate = await prisma.user.findUnique({ where: { id } });
+        if (!userToUpdate) {
+            return res.status(404).json({ error: 'User not found.' });
+        }
+
+        const SUPER_ADMIN_EMAIL = 'kk_habouche@esi.dz';
+
+        // Prevent demoting the super admin or self
+        if (role !== 'ADMIN') {
+            if (userToUpdate.email === SUPER_ADMIN_EMAIL) {
+                return res.status(400).json({ error: 'The super admin cannot be demoted.' });
+            }
+            if (id === req.user.id) {
+                return res.status(400).json({ error: 'You cannot demote yourself.' });
+            }
         }
 
         const user = await prisma.user.update({
@@ -150,7 +162,17 @@ export const deleteUser = async (req, res) => {
     try {
         const { id } = req.params;
 
-        // Prevent self-deletion
+        const userToDelete = await prisma.user.findUnique({ where: { id } });
+        if (!userToDelete) {
+            return res.status(404).json({ error: 'User not found.' });
+        }
+
+        const SUPER_ADMIN_EMAIL = 'kk_habouche@esi.dz';
+
+        // Prevent deleting the super admin or self
+        if (userToDelete.email === SUPER_ADMIN_EMAIL) {
+            return res.status(400).json({ error: 'The super admin cannot be deleted.' });
+        }
         if (id === req.user.id) {
             return res.status(400).json({ error: 'You cannot delete yourself.' });
         }

@@ -211,7 +211,8 @@ export const createOutroImage = async (arabicText, englishText, urlText, outputP
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
-    // Layout configuration
+    // Layout configuration - using min dimension for consistent scaling
+    const baseSize = Math.min(width, height);
     const centerY = height / 2;
     let arabicY = centerY - (height * 0.12);
     let englishY = centerY - (height * 0.01);
@@ -221,51 +222,54 @@ export const createOutroImage = async (arabicText, englishText, urlText, outputP
     if (arabicLines.length > 1) arabicY -= (height * 0.02); // nudge up if multiline
 
     // Render Smaller Arabic Title
-    ctx.font = `${Math.floor(width * 0.06)}px "Arial"`;
+    const arabicFontSize = Math.floor(baseSize * 0.09);
+    ctx.font = `${arabicFontSize}px "Arial"`;
     ctx.fillStyle = '#f8fafc'; // clean white-ish
     ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
     ctx.shadowBlur = 15;
 
     arabicLines.forEach(line => {
         ctx.fillText(line, width / 2, arabicY);
-        arabicY += Math.floor(width * 0.09); // Add Line Spread
+        arabicY += arabicFontSize * 1.3; // Add Line Spread
     });
 
     const englishLines = englishText.split('\n');
     if (englishLines.length > 1) englishY += (height * 0.01); // nudge down if multiline
 
     // Render English Subtitle
-    ctx.font = `${Math.floor(width * 0.04)}px "Arial"`;
+    const englishFontSize = Math.floor(baseSize * 0.05);
+    ctx.font = `${englishFontSize}px "Arial"`;
     ctx.fillStyle = '#94a3b8'; // subtle slate
     ctx.shadowBlur = 4;
 
     englishLines.forEach(line => {
         ctx.fillText(line, width / 2, englishY);
-        englishY += Math.floor(width * 0.06); // Add Line Spread
+        englishY += englishFontSize * 1.3; // Add Line Spread
     });
 
     // URL Gradient Config & Measurements
-    ctx.font = `bold ${Math.floor(width * 0.04)}px "Arial"`;
+    const urlFontSize = Math.floor(baseSize * 0.05);
+    ctx.font = `bold ${urlFontSize}px "Arial"`;
     const textWidth = ctx.measureText(urlText).width;
-    const iconSize = Math.floor(width * 0.035);
-    const innerSpacing = width * 0.02;
+    const iconSize = Math.floor(baseSize * 0.06); // scaled icon
+    const innerSpacing = baseSize * 0.02;
     const contentWidth = iconSize + innerSpacing + textWidth;
 
     const urlGradient = ctx.createLinearGradient((width / 2) - (contentWidth / 2), 0, (width / 2) + (contentWidth / 2), 0);
     urlGradient.addColorStop(0, '#fbbf24'); // gold
     urlGradient.addColorStop(1, '#f59e0b');
 
-    // Render URL Pill Background
-    const paddingX = width * 0.08;
-    const paddingY = height * 0.025;
+    // Render URL Pill Background with better internal padding
+    const paddingX = baseSize * 0.06;
+    const paddingY = urlFontSize * 0.6; // Vertical padding proportional to font
 
     ctx.shadowColor = 'rgba(245, 158, 11, 0.3)';
     ctx.shadowBlur = 20;
 
-    const rectX = (width / 2) - (contentWidth / 2) - paddingX;
-    const rectY = urlY - paddingY - (height * 0.005);
     const rectW = contentWidth + (paddingX * 2);
-    const rectH = (height * 0.01) + (paddingY * 2);
+    const rectH = urlFontSize + (paddingY * 2);
+    const rectX = (width / 2) - (rectW / 2);
+    const rectY = urlY - (rectH / 2);
 
     drawRoundRect(ctx, rectX, rectY, rectW, rectH, rectH / 2);
 
@@ -274,7 +278,7 @@ export const createOutroImage = async (arabicText, englishText, urlText, outputP
     ctx.fill();
     // Stroke the button border
     ctx.strokeStyle = '#f59e0b';
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 2; // thicker border
     ctx.stroke();
 
     // Turn off shadow for crisp text and icons inside glowing box
@@ -286,6 +290,7 @@ export const createOutroImage = async (arabicText, englishText, urlText, outputP
 
     ctx.fillStyle = urlGradient;
     ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle'; // ensure vertical center
     ctx.fillText(urlText, iconX + iconSize + innerSpacing, urlY);
 
     const buffer = canvas.toBuffer('image/png');
