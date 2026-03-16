@@ -180,8 +180,9 @@ export const getProgressStream = (req, res) => {
 
     // Setup SSE
     res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // Disable buffering for Nginx/Cloudflare
 
     let isFinished = false;
 

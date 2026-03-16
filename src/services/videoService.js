@@ -58,6 +58,11 @@ export const getProgress = (requestId, callback, req) => {
                 }
 
                 callback(data, data.status === 'status_completed' || data.status === 'completed' || data.error);
+                
+                // Flush the response if the compression middleware is used
+                if (req && req.res && typeof req.res.flush === 'function') {
+                    req.res.flush();
+                }
                 if (data.status === 'status_completed' || data.status === 'completed' || data.error) {
                     clearInterval(interval);
                 }
