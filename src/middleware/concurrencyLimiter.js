@@ -11,7 +11,9 @@ const STALE_JOB_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 export const concurrencyLimiter = async (req, res, next) => {
     try {
         const clientIp = req.ip;
-        const existingJobId = await getActiveJob(clientIp);
+        const userId = req.user?.id;
+        const lockKey = userId || clientIp;
+        const existingJobId = await getActiveJob(lockKey);
 
         if (existingJobId) {
             // Double-check the job is actually still active (not a stale key)
@@ -40,7 +42,7 @@ export const concurrencyLimiter = async (req, res, next) => {
             }
 
             // Terminal or stale — clear the lock proactively
-            await clearActiveJob(clientIp);
+            await clearActiveJob(lockKey);
         }
 
         next();

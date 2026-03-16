@@ -4,7 +4,7 @@ import { videoGenerationLimiter } from '../middleware/rateLimiter.js';
 import { validateVideoRequest, validateRequestId, validateSubscription } from '../middleware/validation.js';
 import { upload } from '../middleware/upload.js';
 import { concurrencyLimiter } from '../middleware/concurrencyLimiter.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, optionalAuth } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -113,7 +113,8 @@ router.post('/generate-video', requireAuth, videoGenerationLimiter, concurrencyL
  *       500:
  *         description: Server error
  */
-router.delete('/generate-video/cancel', cancelVideoEndpoint);
+router.delete('/generate-video/cancel', optionalAuth, cancelVideoEndpoint);
+router.post('/generate-video/cancel', optionalAuth, cancelVideoEndpoint);
 
 /**
  * @swagger

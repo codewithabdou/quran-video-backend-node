@@ -46,15 +46,15 @@ export const generateVideoEndpoint = async (req, res) => {
 
 /**
  * Internal function to handle the cancellation of an active job by its ID
- * Optionally provide clientIp to explicitly clear the rate limit lock.
- * If clientIp is omitted, it attempts to read it from the job data.
+ * Optionally provide explicitLockKey to explicitly clear the rate limit lock.
+ * If explicitLockKey is omitted, it attempts to read it from the job data.
  */
-const cancelJobById = async (activeJobId, explicitClientIp = null) => {
+const cancelJobById = async (activeJobId, explicitLockKey = null) => {
     if (!activeJobId) {
         return null; // Nothing to cancel
     }
 
-    let clientIp = explicitClientIp;
+    let lockKey = explicitLockKey;
 
     console.log(`[Cancel API/Internal] Cancelling job ${activeJobId}`);
 
@@ -62,18 +62,18 @@ const cancelJobById = async (activeJobId, explicitClientIp = null) => {
     try {
         const job = await videoQueue.getJob(activeJobId);
         if (job) {
-            clientIp = job.data.clientIp || explicitClientIp;
+            lockKey = job.data.userId || job.data.clientIp || explicitLockKey;
         }
     } catch (e) {
-        console.error(`[Cancel API/Internal] Error reading job data for IP recovery:`, e.message);
+        console.error(`[Cancel API/Internal] Error reading job data for key recovery:`, e.message);
     }
 
     // 1. Set the cancellation flag in Redis (so worker knows to discard results)
     await setCancelled(activeJobId);
 
-    // 2. Clear the IP rate limit lock so user can start a new one (if we found an IP)
-    if (clientIp) {
-        await clearActiveJob(clientIp);
+    // 2. Clear the rate limit lock so user can start a new one
+    if (lockKey) {
+        await clearActiveJob(lockKey);
     }
 
     // 3. Set progress to 'cancelled' so the SSE stream notifies the frontend
@@ -102,14 +102,6 @@ const cancelJobById = async (activeJobId, explicitClientIp = null) => {
     }
     
     return activeJobId;
-};
-
-/**
- * Internal helper backward compatibility
- */
-const cancelJobByIp = async (clientIp) => {
-    const activeJobId = await getActiveJob(clientIp);
-    return cancelJobById(activeJobId, clientIp);
 };
 
 /**
@@ -203,7 +195,9 @@ export const getProgressStream = (req, res) => {
             console.log(`[SSE] Connection closed prematurely by IP ${clientIp}. Auto-cancelling job ${requestId}...`);
             isFinished = true;
             try {
-                await cancelJobByIp(clientIp);
+                // Determine if we need to query by userId or IP. Since this is SSE, req.user isn't directly 
+                // injected easily without sending tokens in query parameters, but we can just use the job ID directly!
+                await cancelJobById(requestId);
             } catch (err) {
                 console.error(`[SSE/Cancel] Failed to auto-cancel job on disconnect:`, err);
             }
@@ -308,12 +302,28 @@ export const checkBackground = (req, res) => {
 };
 
 /**
- * Cancel the active video generation job for the user's IP
+ * Cancel the active video generation job for the user's IP / Account
  */
 export const cancelVideoEndpoint = async (req, res, next) => {
     try {
         const clientIp = req.ip;
-        const cancelledJobId = await cancelJobByIp(clientIp);
+        const userId = req.user?.id;
+        
+        let cancelledJobId = null;
+
+        if (userId) {
+            const activeJobId = await getActiveJob(userId);
+            if (activeJobId) {
+                cancelledJobId = await cancelJobById(activeJobId, userId);
+            }
+        }
+        
+        if (!cancelledJobId) {
+            const activeJobId = await getActiveJob(clientIp);
+            if (activeJobId) {
+                cancelledJobId = await cancelJobById(activeJobId, clientIp);
+            }
+        }
 
         if (!cancelledJobId) {
             return res.status(404).json({ message: 'No active job found to cancel.' });
