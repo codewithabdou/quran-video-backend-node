@@ -397,7 +397,8 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
             const command = ffmpeg();
             
             // Loop the background video infinitely if it's shorter than the audio
-            command.input(bgPath).inputOptions(['-stream_loop', '-1']);
+            // Added -an to strictly discard any background audio stream, preventing FFmpeg buffer deadlocks on loop!
+            command.input(bgPath).inputOptions(['-stream_loop', '-1', '-an']);
 
             let audioInputsStart = 1;
             audioPaths.forEach(ap => command.input(ap));
