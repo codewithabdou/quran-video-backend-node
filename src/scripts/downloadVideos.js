@@ -63,9 +63,9 @@ async function downloadPexelsVideos() {
                 
                 let fileCount = 0;
                 for (const file of videoData.video_files) {
-                    // Unique name for each quality
                     const qualityFileName = `pexels_${videoId}_${file.quality}_${file.width}x${file.height}.mp4`;
                     const qualityFilePath = path.join(UPLOADS_DIR, qualityFileName);
+                    const tempQualityPath = `${qualityFilePath}.tmp`;
                     
                     if (!fs.existsSync(qualityFilePath)) {
                         console.log(`      ⬇️ Downloading ${videoId} (Quality: ${file.quality}, ${file.width}x${file.height})...`);
@@ -77,13 +77,19 @@ async function downloadPexelsVideos() {
                             httpsAgent: agent
                         });
 
-                        const writer = fs.createWriteStream(qualityFilePath);
+                        const writer = fs.createWriteStream(tempQualityPath);
                         response.data.pipe(writer);
 
                         await new Promise((resolve, reject) => {
                             writer.on('finish', resolve);
-                            writer.on('error', reject);
+                            writer.on('error', (err) => {
+                                if (fs.existsSync(tempQualityPath)) fs.unlinkSync(tempQualityPath);
+                                reject(err);
+                            });
                         });
+                        
+                        // Atomic rename
+                        fs.renameSync(tempQualityPath, qualityFilePath);
                         console.log(`      ✅ Successfully downloaded ${qualityFileName}!`);
                         fileCount++;
                     } else {

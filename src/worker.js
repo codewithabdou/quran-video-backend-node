@@ -29,13 +29,14 @@ export const abortJob = (jobId) => {
  * Save generation history to database
  * Only saves if the job was initiated by an authenticated user
  */
-const saveGenerationHistory = async (requestData, userId, status, startTime) => {
+const saveGenerationHistory = async (requestData, requestId, userId, status, startTime) => {
     if (!userId) return; // Anonymous user — skip
 
     try {
         const duration = (Date.now() - startTime) / 1000; // seconds
         await prisma.generationHistory.create({
             data: {
+                id: requestId, // Force database ID to match filename ID
                 userId,
                 surah: parseInt(requestData.surah),
                 ayahStart: parseInt(requestData.ayah_start),
@@ -72,7 +73,7 @@ const worker = new Worker(
         if (await isCancelled(requestId)) {
             console.log(`[Worker] Job ${requestId} was cancelled before processing started. Skipping.`);
             if (clientIp) await clearActiveJob(clientIp);
-            await saveGenerationHistory(requestData, userId, 'cancelled', startTime);
+            await saveGenerationHistory(requestData, requestId, userId, 'cancelled', startTime);
             return { status: 'cancelled' };
         }
 
@@ -107,7 +108,7 @@ const worker = new Worker(
                 }
                 if (clientIp) await clearActiveJob(clientIp);
                 activeControllers.delete(requestId);
-                await saveGenerationHistory(requestData, userId, 'cancelled', startTime);
+                await saveGenerationHistory(requestData, requestId, userId, 'cancelled', startTime);
                 return { status: 'cancelled' };
             }
 
@@ -125,7 +126,7 @@ const worker = new Worker(
             console.log(`[Worker] Job ${job.id} completed. Output: ${result.path}`);
 
             // Save successful generation to history
-            await saveGenerationHistory(requestData, userId, 'completed', startTime);
+            await saveGenerationHistory(requestData, requestId, userId, 'completed', startTime);
 
             return { path: result.path, status: 'completed' };
         } catch (error) {
@@ -145,10 +146,9 @@ const worker = new Worker(
                     }
                 }
                 if (clientIp) {
-                    await clearActiveJob(clientIp);
                     console.log(`[Worker] Released concurrency lock for IP (cancelled): ${clientIp}`);
                 }
-                await saveGenerationHistory(requestData, userId, 'cancelled', startTime);
+                await saveGenerationHistory(requestData, requestId, userId, 'cancelled', startTime);
                 // Return gracefully instead of throwing so BullMQ doesn't mark as "failed"
                 return { status: 'cancelled' };
             }
@@ -163,7 +163,7 @@ const worker = new Worker(
             }
 
             // Save failed generation to history
-            await saveGenerationHistory(requestData, userId, 'failed', startTime);
+            await saveGenerationHistory(requestData, requestId, userId, 'failed', startTime);
 
             throw error; // BullMQ will mark the job as failed
         }

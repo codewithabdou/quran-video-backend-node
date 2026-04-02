@@ -1,0 +1,7 @@
+{
+  "watch": ["src"],
+  "ext": "js,json",
+  "ignore": ["data/*", "temp/*", "uploads/*", "outputs/*"],
+  "legacyWatch": true,
+  "interval": 1000
+}

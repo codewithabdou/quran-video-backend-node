@@ -7,8 +7,7 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    // We use process.env instead of the Prisma env() helper here 
-    // to prevent build-time crashes when the variable is missing.
-    url: process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/postgres",
+
+    url: process.env.DATABASE_URL,
   },
 });

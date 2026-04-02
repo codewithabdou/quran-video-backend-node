@@ -1,30 +1,14 @@
-# Dependencies
-node_modules/
-
-# Environment
+node_modules
+npm-debug.log
+temp
+uploads/*
+!uploads/.gitkeep
+outputs/*
+!outputs/.gitkeep
 .env
-.env.*
-!.env.example
-
-# Runtime Data
-temp/
-outputs/
-logs/
-*.log
-data/
-
-# Testing
-coverage/
-
-# Misc
-.DS_Store
-.vscode/
-Thumbs.db
-.git/
+.env.production
+.git
 .gitignore
-
-# Project Specific
-src/constants/pexels_videos_cache.json
-
-# Documentation
-README.md
+Dockerfile
+docker-compose.yml
+.dockerignore

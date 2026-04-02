@@ -188,20 +188,11 @@ export const getProgressStream = (req, res) => {
         }
     }, req);
 
-    // Automatically cancel the job if the client closes the connection (e.g., closes tab, refresh)
-    // before the video has finished rendering.
-    req.on('close', async () => {
-        if (!isFinished) {
-            console.log(`[SSE] Connection closed prematurely by IP ${clientIp}. Auto-cancelling job ${requestId}...`);
-            isFinished = true;
-            try {
-                // Determine if we need to query by userId or IP. Since this is SSE, req.user isn't directly 
-                // injected easily without sending tokens in query parameters, but we can just use the job ID directly!
-                await cancelJobById(requestId);
-            } catch (err) {
-                console.error(`[SSE/Cancel] Failed to auto-cancel job on disconnect:`, err);
-            }
-        }
+    // Automatically end the stream if the job is finished,
+    // but DO NOT auto-cancel the job anymore if the client closes the connection.
+    // This allows the generation to finish in the background even if the user closes the tab.
+    req.on('close', () => {
+        isFinished = true;
     });
 };
 
@@ -232,13 +223,6 @@ export const downloadVideoEndpoint = async (req, res) => {
         res.download(videoPath, `quran_video_${jobId}.mp4`, (err) => {
             if (err) {
                 console.error("Error sending file:", err);
-            }
-            // Cleanup immediately after download completes
-            try {
-                if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
-                console.log(`Deleted output file: ${videoPath}`);
-            } catch (cleanupErr) {
-                console.error("Failed to delete output file:", cleanupErr);
             }
         });
 

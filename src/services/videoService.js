@@ -191,6 +191,36 @@ export const sendCompletionNotification = (requestId, providedSubscription = nul
 };
 
 /**
+ * Ensures Quran text data exists locally. Downloads if missing.
+ */
+const ensureQuranData = async () => {
+    const dataDir = path.join(process.cwd(), 'data');
+    const textDir = path.join(dataDir, 'text');
+    
+    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+    if (!fs.existsSync(textDir)) fs.mkdirSync(textDir, { recursive: true });
+
+    const arabicPath = path.join(textDir, 'quran-arabic.json');
+    const englishPath = path.join(textDir, 'quran-en.json');
+
+    if (!fs.existsSync(arabicPath)) {
+        console.log('[VideoService] Cache Miss: Arabic text missing. Downloading from AlQuran.cloud...');
+        const res = await axios.get('http://api.alquran.cloud/v1/quran/quran-simple');
+        fs.writeFileSync(arabicPath, JSON.stringify(res.data.data, null, 2));
+        console.log('[VideoService] Arabic text downloaded successfully.');
+    }
+
+    if (!fs.existsSync(englishPath)) {
+        console.log('[VideoService] Cache Miss: English text missing. Downloading en.sahih from AlQuran.cloud...');
+        const res = await axios.get('http://api.alquran.cloud/v1/quran/en.sahih');
+        fs.writeFileSync(englishPath, JSON.stringify(res.data.data, null, 2));
+        console.log('[VideoService] English text downloaded successfully.');
+    }
+
+    return { arabicPath, englishPath };
+};
+
+/**
  * Core video generation logic — exported for the worker to import
  * This is the heavy FFmpeg work that runs inside the BullMQ worker
  */
@@ -201,15 +231,10 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
 
     try {
-        // 1. Fetch Quran Data (Local)
+        // 1. Fetch Quran Data (Local with dynamic fallback)
         await updateProgress(10, 'status_fetching');
         const dataDir = path.join(process.cwd(), 'data');
-        const arabicPath = path.join(dataDir, 'text', 'quran-arabic.json');
-        const englishPath = path.join(dataDir, 'text', 'quran-en.json');
-
-        if (!fs.existsSync(arabicPath) || !fs.existsSync(englishPath)) {
-            throw new Error(`Local text data missing. Please run the download scripts.`);
-        }
+        const { arabicPath, englishPath } = await ensureQuranData();
 
         const arabicData = JSON.parse(fs.readFileSync(arabicPath, 'utf8'));
         const englishData = JSON.parse(fs.readFileSync(englishPath, 'utf8'));
@@ -240,25 +265,35 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
             }
         }
 
+        console.log(`[VideoService] Preparing background: ${background_url || 'default'}`);
         // 2. Prepare Background
-        await updateProgress(20, 'status_downloading');
         const bgPath = path.join(tempDir, 'background.mp4');
-        const fallbackBgPath = path.join(process.cwd(), 'fallback video', 'default_background.mp4');
+        const uploadDir = path.join(process.cwd(), 'uploads');
+
+        const useSmartFallback = () => {
+            if (fs.existsSync(uploadDir)) {
+                const files = fs.readdirSync(uploadDir).filter(f => f.endsWith('.mp4'));
+                if (files.length > 0) {
+                    const randomFile = files[Math.floor(Math.random() * files.length)];
+                    const fallbackPath = path.join(uploadDir, randomFile);
+                    console.log(`[Smart Fallback] Using random cached video as fallback: ${randomFile}`);
+                    fs.copyFileSync(fallbackPath, bgPath);
+                    return true;
+                }
+            }
+            return false;
+        };
 
         if (background_url === 'default' || !background_url) {
-            if (fs.existsSync(fallbackBgPath)) {
-                fs.copyFileSync(fallbackBgPath, bgPath);
-            } else {
-                throw new Error('Fallback video not found');
+            if (!useSmartFallback()) {
+                throw new Error('No background videos available in cache for fallback.');
             }
         } else if (background_url.startsWith('http://') || background_url.startsWith('https://')) {
             // It's an external URL, attempt standard download
             const bgDownloaded = await downloadFile(background_url, bgPath);
             if (!bgDownloaded || !fs.existsSync(bgPath)) {
-                if (fs.existsSync(fallbackBgPath)) {
-                    fs.copyFileSync(fallbackBgPath, bgPath);
-                } else {
-                    throw new Error('Background download failed and fallback video not found');
+                if (!useSmartFallback()) {
+                    throw new Error('Background download failed and no local cache available for fallback.');
                 }
             }
         } else {
@@ -266,10 +301,9 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
             if (fs.existsSync(background_url)) {
                 fs.copyFileSync(background_url, bgPath);
             } else {
-                if (fs.existsSync(fallbackBgPath)) {
-                    fs.copyFileSync(fallbackBgPath, bgPath);
-                } else {
-                    throw new Error('Local background file not found and fallback video not found');
+                console.warn(`[VideoService] Local background ${background_url} not found. Triggering smart fallback...`);
+                if (!useSmartFallback()) {
+                    throw new Error(`Requested background not found and no local cache available for fallback.`);
                 }
             }
         }
@@ -277,6 +311,7 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
         const audioPaths = [];
         const subtitleImages = [];
         let totalDuration = 0;
+        console.log(`[VideoService] Processing ${ayahs.length} ayahs...`);
 
         const requestedRes = parseInt(resolution);
         let width, height;
@@ -297,22 +332,34 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
         const MAX_DURATION = 180; // 3 minutes
         for (const ayah of ayahs) {
             if (!fs.existsSync(ayah.audioPath)) {
-                // Cache miss - fallback to downloading and storing it in the persistent data volume permanently
-                console.log(`[Cache Miss] Local audio missing for Ayah ${ayah.number}. Downloading...`);
+                // Cache miss - fetch official URL from AlQuran.cloud API
+                console.log(`[Cache Miss] Local audio missing for Ayah ${surah}:${ayah.number}. Fetching official URL...`);
                 
-                // Ensure the directory exists first
-                const targetDir = path.dirname(ayah.audioPath);
-                if (!fs.existsSync(targetDir)) {
-                    fs.mkdirSync(targetDir, { recursive: true });
-                }
+                try {
+                    const ayahRes = await axios.get(`http://api.alquran.cloud/v1/ayah/${surah}:${ayah.number}/${reciter_id}`);
+                    const officialAudioUrl = ayahRes.data.data.audio;
+                    
+                    if (!officialAudioUrl) throw new Error("No audio URL returned from API");
 
-                const dlSuccess = await downloadFile(ayah.audioFallbackUrl, ayah.audioPath);
-                if (!dlSuccess || !fs.existsSync(ayah.audioPath)) {
-                    throw new Error(`Failed to fallback download audio for Ayah ${ayah.number}. Path: ${ayah.audioPath}`);
+                    // Ensure the directory exists first
+                    const targetDir = path.dirname(ayah.audioPath);
+                    if (!fs.existsSync(targetDir)) {
+                        fs.mkdirSync(targetDir, { recursive: true });
+                    }
+
+                    console.log(`[VideoService] Downloading audio from: ${officialAudioUrl}`);
+                    const dlSuccess = await downloadFile(officialAudioUrl, ayah.audioPath);
+                    if (!dlSuccess || !fs.existsSync(ayah.audioPath)) {
+                        throw new Error(`Failed to download audio from ${officialAudioUrl}`);
+                    }
+                } catch (error) {
+                    console.error(`[VideoService] Audio fallback failed: ${error.message}`);
+                    throw new Error(`Could not fetch audio for Ayah ${surah}:${ayah.number}. Please check your connection or reciter ID.`);
                 }
             }
 
             ayah.duration = await getMediaDuration(ayah.audioPath);
+            console.log(`[VideoService] Ayah ${ayah.number} duration: ${ayah.duration}s`);
             
             ayah.startTime = totalDuration;
             totalDuration += ayah.duration;
@@ -346,13 +393,22 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
         let outroDuration = 5;
 
         if (!fs.existsSync(localOutroAudioPath)) {
-             console.log(`[Cache Miss] Local outro audio missing. Downloading...`);
-             const targetDir = path.dirname(localOutroAudioPath);
-             if (!fs.existsSync(targetDir)) {
-                 fs.mkdirSync(targetDir, { recursive: true });
+             console.log(`[Cache Miss] Local outro audio missing (Surah 73:4). Fetching official URL...`);
+             try {
+                const outroRes = await axios.get(`http://api.alquran.cloud/v1/ayah/73:4/${reciter_id}`);
+                const officialOutroUrl = outroRes.data.data.audio;
+                
+                if (officialOutroUrl) {
+                    const targetDir = path.dirname(localOutroAudioPath);
+                    if (!fs.existsSync(targetDir)) {
+                        fs.mkdirSync(targetDir, { recursive: true });
+                    }
+                    console.log(`[VideoService] Downloading outro audio from: ${officialOutroUrl}`);
+                    await downloadFile(officialOutroUrl, localOutroAudioPath);
+                }
+             } catch (error) {
+                console.warn(`[VideoService] Outro audio fallback failed: ${error.message}. Proceeding without outro audio.`);
              }
-             const fallbackUrl = `https://everyayah.com/data/${reciter_id}/073004.mp3`;
-             await downloadFile(fallbackUrl, localOutroAudioPath);
         }
 
         if (fs.existsSync(localOutroAudioPath)) {
@@ -379,6 +435,7 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
             englishFontPath: path.join(process.cwd(), 'fonts/arial.ttf')
         });
 
+        console.log(`[VideoService] Starting FFmpeg rendering for ${requestId}...`);
         // 3. Composition
         await updateProgress(50, 'status_rendering');
         const outputPath = path.join(process.cwd(), 'outputs', `video_${requestId}.mp4`);
@@ -441,7 +498,7 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
             // Add fade-out to the main video sequence
             const fadeOutStart = Math.max(0, totalDuration - 0.5); // Start fade 0.5s before end
             // Use Lanczos for high-quality scaling and setsar=1 to ensure proper aspect ratio
-            filter.push(`[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1,trim=duration=${totalDuration},drawtext=fontfile='${fontFileStr}':text='${urlTextEscaped}':fontcolor=white@0.7:fontsize=${Math.floor(width * 0.035)}:x=w-tw-20:y=h-th-20,fade=t=out:st=${fadeOutStart}:d=0.5:color=black[bg]`);
+            filter.push(`[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1,fps=30,trim=duration=${totalDuration},drawtext=fontfile='${fontFileStr}':text='${urlTextEscaped}':fontcolor=white@0.7:fontsize=${Math.floor(width * 0.035)}:x=w-tw-20:y=h-th-20,fade=t=out:st=${fadeOutStart}:d=0.5:color=black[bg]`);
 
             let currentVideoLabel = '[bg]';
             subtitleImages.forEach((img, i) => {
@@ -452,7 +509,7 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
             if (subtitleImages.length === 0) filter.push(`${currentVideoLabel}[mainv]`);
 
             // Outro Logic
-            filter.push(`color=c=black:s=${width}x${height}:d=${outroDuration}[black_bg]`);
+            filter.push(`color=c=black:s=${width}x${height}:d=${outroDuration},fps=30[black_bg]`);
             filter.push(`[black_bg][${outroImageIndex}:v]overlay=(W-w)/2:(H-h)/2:eval=init,fade=t=in:st=0:d=0.5:color=black[outrov]`);
 
             if (hasOutroAudio) {
@@ -468,15 +525,21 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
                     '-map', '[finalv]',
                     '-map', '[finala]',
                     '-c:v', 'libx264',
-                    '-preset', 'medium',
-                    '-crf', '18',
+                    '-preset', 'veryfast',
+                    '-crf', '22',
+                    '-r', '30',
                     '-pix_fmt', 'yuv420p',
                     '-c:a', 'aac',
-                    '-b:a', '192k',
-                    '-s', `${width}x${height}`,
-                    '-threads', '4'
+                    '-b:a', '128k',
+                    '-ar', '44100',
+                    '-threads', '2'
                 ])
                 .output(outputPath)
+                .on('stderr', (line) => {
+                    if (line.includes('frame=')) {
+                        console.log(`FFmpeg Progress: ${line.trim()}`);
+                    }
+                })
                 .on('progress', async (progress) => {
                     // Manual time-based progress calculation: 50% + (current_time / total_duration * 50%)
                     let p = 75;
@@ -526,7 +589,12 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
 
 const getMediaDuration = (path) => {
     return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            reject(new Error(`ffprobe timeout for ${path}`));
+        }, 20000); // 20 second timeout
+
         ffmpeg.ffprobe(path, (err, metadata) => {
+            clearTimeout(timeout);
             if (err) reject(err);
             else resolve(metadata.format.duration);
         });

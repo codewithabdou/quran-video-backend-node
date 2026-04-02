@@ -52,10 +52,60 @@ app.use(passport.session());
 app.set('trust proxy', 1);
 
 // Create temp directories if they don't exist
+// Create and clean temp directories
 const tempDir = path.join(process.cwd(), 'temp');
 const outputDir = path.join(process.cwd(), 'outputs');
-if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
-if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
+const uploadsDir = path.join(process.cwd(), 'uploads');
+
+// Ensure directories exist
+[tempDir, outputDir, uploadsDir].forEach(dir => {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+});
+
+// Clean orphaned temp files on startup
+console.log('Cleaning orphaned temp files...');
+try {
+    const orphanedFiles = fs.readdirSync(tempDir);
+    for (const file of orphanedFiles) {
+        const fullPath = path.join(tempDir, file);
+        if (fs.lstatSync(fullPath).isDirectory()) {
+            fs.rmSync(fullPath, { recursive: true, force: true });
+        } else {
+            fs.unlinkSync(fullPath);
+        }
+    }
+    console.log(`Cleaned ${orphanedFiles.length} items from temp directory.`);
+} catch (e) {
+    console.error('Error during startup temp cleanup:', e.message);
+}
+
+// Background cleanup for outputs (Retention: 3 hours)
+const THREE_HOURS_MS = 3 * 60 * 60 * 1000;
+setInterval(() => {
+    console.log('[Cleanup] Running periodic output cleanup...');
+    try {
+        const files = fs.readdirSync(outputDir);
+        let cleanedCount = 0;
+        const now = Date.now();
+
+        for (const file of files) {
+            if (!file.endsWith('.mp4')) continue;
+            const filePath = path.join(outputDir, file);
+            const stats = fs.statSync(filePath);
+            const age = now - stats.mtimeMs;
+
+            if (age > THREE_HOURS_MS) {
+                fs.unlinkSync(filePath);
+                cleanedCount++;
+            }
+        }
+        if (cleanedCount > 0) {
+            console.log(`[Cleanup] Successfully removed ${cleanedCount} expired videos.`);
+        }
+    } catch (error) {
+        console.error('[Cleanup] Error during periodic cleanup:', error.message);
+    }
+}, 15 * 60 * 1000); // Run every 15 minutes
 
 // Apply rate limiting to all API routes
 app.use('/api/v1', apiLimiter);

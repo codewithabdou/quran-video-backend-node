@@ -1,4 +1,6 @@
 import prisma from '../config/database.js';
+import fs from 'fs';
+import path from 'path';
 
 /**
  * GET /history
@@ -21,8 +23,34 @@ export const getUserHistory = async (req, res) => {
             prisma.generationHistory.count({ where: { userId } }),
         ]);
 
+        // Enrich with availability and expiry info
+        const enrichedGenerations = generations.map(gen => {
+            const fileName = `video_${gen.id}.mp4`;
+            const outputPath = path.resolve(process.cwd(), 'outputs', fileName);
+            const exists = fs.existsSync(outputPath);
+            
+            // Calculate expiry (3 hours after creation)
+            const createdTime = new Date(gen.createdAt).getTime();
+            const now = Date.now();
+            const threeHours = 3 * 60 * 60 * 1000;
+            const buffer = 1 * 60 * 1000; // 1-minute grace period for clock drift
+            
+            const expiresAt = createdTime + threeHours;
+            const isExpired = now > (expiresAt + buffer);
+
+            // Logging for total visibility!
+            console.log(`[History Check] ID: ${gen.id.substring(0, 8)} | Discovered on VPS: ${exists} | Expired: ${isExpired} | Now: ${new Date(now).toISOString()} | Created: ${new Date(createdTime).toISOString()}`);
+
+            return {
+                ...gen,
+                isAvailable: exists && !isExpired,
+                expiresAt: new Date(expiresAt).toISOString(),
+                isExpired: isExpired || !exists
+            };
+        });
+
         res.json({
-            generations,
+            generations: enrichedGenerations,
             pagination: {
                 page,
                 limit,
