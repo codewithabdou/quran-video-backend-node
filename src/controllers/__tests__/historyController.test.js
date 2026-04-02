@@ -10,9 +10,17 @@ jest.unstable_mockModule('../../config/database.js', () => ({
     },
 }));
 
+// Mock filesystem
+jest.unstable_mockModule('fs', () => ({
+    default: {
+        existsSync: jest.fn(() => true),
+    },
+}));
+
 // Import controller after mocking
 const { getUserHistory } = await import('../historyController.js');
 const prisma = (await import('../../config/database.js')).default;
+const fs = (await import('fs')).default;
 
 describe('History Controller', () => {
     let req, res;
@@ -31,17 +39,29 @@ describe('History Controller', () => {
 
     describe('getUserHistory', () => {
         it('should return paginated history', async () => {
+            const now = 1712066400000; // Fixed timestamp for testing
+            jest.spyOn(Date, 'now').mockReturnValue(now);
+            
+            const createdAt = new Date(now - 3600000).toISOString(); // 1 hour ago
             const mockGenerations = [
-                { id: 'gen-1', surah: 1, status: 'completed' },
-                { id: 'gen-2', surah: 2, status: 'failed' },
+                { id: 'gen-1', surah: 1, status: 'completed', createdAt },
+                { id: 'gen-2', surah: 2, status: 'failed', createdAt },
             ];
             prisma.generationHistory.findMany.mockResolvedValue(mockGenerations);
             prisma.generationHistory.count.mockResolvedValue(2);
+            fs.existsSync.mockReturnValue(true);
 
             await getUserHistory(req, res);
 
+            const expectedEnriched = mockGenerations.map(gen => ({
+                ...gen,
+                isAvailable: true,
+                expiresAt: new Date(new Date(gen.createdAt).getTime() + 10800000).toISOString(),
+                isExpired: false
+            }));
+
             expect(res.json).toHaveBeenCalledWith({
-                generations: mockGenerations,
+                generations: expectedEnriched,
                 pagination: {
                     page: 1,
                     limit: 10,
