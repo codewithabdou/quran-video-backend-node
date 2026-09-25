@@ -12,7 +12,7 @@ outputs/
 logs/
 *.log
 uploads/
-data/
+data/audio/
 
 # Testing
 coverage/

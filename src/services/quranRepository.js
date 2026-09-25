@@ -238,8 +238,12 @@ export const initQuranRepository = (customDataDir = null) => {
     isInitialized = true;
 };
 
-// Ensure initialization happens automatically upon module load
-initQuranRepository();
+// Ensure initialization happens automatically upon module load if data is available
+try {
+    initQuranRepository();
+} catch (e) {
+    // Allows custom initialization in tests via initQuranRepository(path)
+}
 
 /**
  * Returns a Surah summary by number (1..114)
