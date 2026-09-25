@@ -73,15 +73,23 @@ RUN npm rebuild canvas && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy source code (respecting .dockerignore)
+# Copy generated Prisma client from build stage
+COPY --from=build /app/node_modules/.prisma /app/node_modules/.prisma
+COPY --from=build /app/node_modules/@prisma /app/node_modules/@prisma
+
+# Copy source code
 COPY . .
 
 # Copy fonts if they exist
 COPY fonts/ /app/fonts/
 
+# Copy entrypoint script
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
 # Create runtime directories and set permissions
-RUN mkdir -p temp uploads outputs && \
-    chmod -R 777 temp uploads outputs && \
+RUN mkdir -p temp uploads outputs data && \
+    chmod -R 777 temp uploads outputs data && \
     chown -R appuser:appuser /app
 
 # Switch to non-root user
@@ -90,5 +98,10 @@ USER appuser
 # Expose the application port
 EXPOSE 5000
 
-# Start the application
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD node -e "fetch('http://localhost:5000/').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"
+
+# Entrypoint runs prisma schema push before server start
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["node", "src/server.js"]

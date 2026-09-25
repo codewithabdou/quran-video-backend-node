@@ -1,9 +1,12 @@
-import { enqueueVideoGeneration, getProgress, subscribeToProgress, checkJobResult } from '../services/videoService.js';
+import { enqueueVideoGeneration, getProgress, subscribeToProgress, checkJobResult, getMediaDuration } from '../services/videoService.js';
+import { buildRenderPlan, distributeAudioDurations, renderScreenToBuffer } from '../services/renderPlan.js';
 import { getActiveJob, clearActiveJob, deleteProgress, videoQueue, setCancelled, setProgress } from '../config/queue.js';
 import { abortJob } from '../worker.js';
+import { downloadFile } from '../utils/fileOps.js';
 import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+
 
 /**
  * POST /generate-video
@@ -319,3 +322,187 @@ export const cancelVideoEndpoint = async (req, res, next) => {
         next(err);
     }
 };
+
+/**
+ * POST /api/v1/video/plan
+ * Generates and returns a deterministic render plan with pagination and safe-zone layouts.
+ * No audio download, no FFmpeg rendering.
+ */
+export const getVideoPlanEndpoint = async (req, res, next) => {
+    try {
+        const {
+            surah,
+            ayah_start,
+            ayahStart,
+            ayah_end,
+            ayahEnd,
+            platform = 'reel',
+            resolution = 720,
+            text_mode,
+            textMode,
+            reciter_id,
+            reciterId,
+            timing_overrides,
+            timingOverrides,
+        } = req.body;
+
+        const plan = buildRenderPlan({
+            surah: parseInt(surah, 10),
+            ayahStart: parseInt(ayah_start || ayahStart || 1, 10),
+            ayahEnd: parseInt(ayah_end || ayahEnd || ayah_start || ayahStart || 1, 10),
+            platform,
+            resolution: parseInt(resolution, 10) || 720,
+            textMode: text_mode || textMode || 'bilingual',
+            reciterId: reciter_id || reciterId || 'ar.alafasy',
+            timingOverrides: timing_overrides || timingOverrides || {},
+        });
+
+        res.json({
+            status: 'success',
+            data: { plan },
+        });
+    } catch (err) {
+        next(err);
+    }
+};
+
+/**
+ * POST /api/v1/video/preview-frame
+ * Renders a single planned screen to a transparent PNG buffer.
+ * Byte-for-byte identical to final FFmpeg subtitle overlay.
+ */
+export const getPreviewFrameEndpoint = async (req, res, next) => {
+    try {
+        const {
+            screen,
+            screenId,
+            plan,
+            surah,
+            ayah,
+            page = 1,
+            platform = 'reel',
+            resolution = 720,
+            textMode = 'bilingual',
+        } = req.body;
+
+        let targetScreen = screen;
+
+        if (!targetScreen && plan && screenId) {
+            targetScreen = plan.screens.find(s => s.id === screenId);
+        }
+
+        if (!targetScreen && surah && ayah) {
+            const tempPlan = buildRenderPlan({
+                surah: parseInt(surah, 10),
+                ayahStart: parseInt(ayah, 10),
+                ayahEnd: parseInt(ayah, 10),
+                platform,
+                resolution: parseInt(resolution, 10) || 720,
+                textMode,
+            });
+            targetScreen = tempPlan.screens.find(s => s.ayah === parseInt(ayah, 10) && s.page === parseInt(page, 10)) || tempPlan.screens[0];
+        }
+
+        if (!targetScreen) {
+            return res.status(400).json({ error: 'Target screen could not be determined' });
+        }
+
+        const buffer = await renderScreenToBuffer(targetScreen, {
+            width: req.body.width,
+            height: req.body.height,
+            platform,
+            resolution: parseInt(resolution, 10) || 720,
+        });
+
+        res.set({
+            'Content-Type': 'image/png',
+            'Content-Length': buffer.length,
+            'Cache-Control': 'public, max-age=3600',
+        });
+
+        return res.send(buffer);
+    } catch (err) {
+        next(err);
+    }
+};
+
+/**
+ * POST /api/v1/video/preflight
+ * Resolves exact audio durations via FFprobe, checks the 180s recitation limit,
+ * distributes durations across screens, and returns a finalized timed plan.
+ */
+export const getVideoPreflightEndpoint = async (req, res, next) => {
+    try {
+        const {
+            surah,
+            ayah_start,
+            ayahStart,
+            ayah_end,
+            ayahEnd,
+            platform = 'reel',
+            resolution = 720,
+            text_mode,
+            textMode,
+            reciter_id,
+            reciterId,
+            timing_overrides,
+            timingOverrides,
+        } = req.body;
+
+        const effectiveReciter = reciter_id || reciterId || 'ar.alafasy';
+        const start = parseInt(ayah_start || ayahStart || 1, 10);
+        const end = parseInt(ayah_end || ayahEnd || start, 10);
+        const surahNum = parseInt(surah, 10);
+
+        const initialPlan = buildRenderPlan({
+            surah: surahNum,
+            ayahStart: start,
+            ayahEnd: end,
+            platform,
+            resolution: parseInt(resolution, 10) || 720,
+            textMode: text_mode || textMode || 'bilingual',
+            reciterId: effectiveReciter,
+            timingOverrides: timing_overrides || timingOverrides || {},
+        });
+
+        const dataDir = path.join(process.cwd(), 'data');
+        const ayahDurations = {};
+
+        for (let a = start; a <= end; a++) {
+            const audioFilename = `${String(surahNum).padStart(3, '0')}${String(a).padStart(3, '0')}.mp3`;
+            const audioLocalPath = path.join(dataDir, 'audio', effectiveReciter, audioFilename);
+            const audioFallbackUrl = `https://everyayah.com/data/${effectiveReciter}/${audioFilename}`;
+
+            if (!fs.existsSync(audioLocalPath)) {
+                const targetDir = path.dirname(audioLocalPath);
+                if (!fs.existsSync(targetDir)) {
+                    fs.mkdirSync(targetDir, { recursive: true });
+                }
+                const downloaded = await downloadFile(audioFallbackUrl, audioLocalPath);
+                if (!downloaded || !fs.existsSync(audioLocalPath)) {
+                    throw new Error(`Failed to download audio for Ayah ${a}`);
+                }
+            }
+
+            ayahDurations[a] = await getMediaDuration(audioLocalPath);
+        }
+
+        const timedPlan = distributeAudioDurations(
+            initialPlan,
+            ayahDurations,
+            timing_overrides || timingOverrides || {}
+        );
+
+        res.json({
+            status: 'success',
+            data: {
+                timedPlan,
+                totalRecitationSeconds: timedPlan.duration.recitationMs / 1000,
+                status: timedPlan.duration.status,
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
+};
+

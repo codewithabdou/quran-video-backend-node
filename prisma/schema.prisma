@@ -38,6 +38,9 @@ model GenerationHistory {
   translationId String
   resolution    Int      @default(720)
   platform      String   @default("reel")
+  textMode      String?  @default("bilingual")
+  layoutVersion Int?     @default(1)
+  planHash      String?
   status        String   // completed, failed, cancelled
   duration      Float?   // rendering time in seconds
   createdAt     DateTime @default(now())

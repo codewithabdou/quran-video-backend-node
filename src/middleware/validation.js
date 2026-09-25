@@ -1,5 +1,6 @@
-import { body, param, validationResult } from 'express-validator';
+import { body, param, query, validationResult } from 'express-validator';
 import { ValidationError } from '../utils/errors.js';
+import quranRepository from '../services/quranRepository.js';
 
 /**
  * Validation middleware wrapper
@@ -35,7 +36,15 @@ export const validateVideoRequest = [
         .isInt({ min: 1 })
         .withMessage('End Ayah must be at least 1')
         .custom((value, { req }) => {
-            if (value < req.body.ayah_start) {
+            const surah = req.body.surah;
+            const start = req.body.ayah_start;
+            const end = value;
+            if (surah && start) {
+                const rangeVal = quranRepository.validateRange(surah, start, end);
+                if (!rangeVal.valid) {
+                    throw new Error(rangeVal.error);
+                }
+            } else if (value < req.body.ayah_start) {
                 throw new Error('End Ayah must be greater than or equal to Start Ayah');
             }
             return true;
@@ -50,7 +59,28 @@ export const validateVideoRequest = [
     body('translation_id')
         .optional()
         .isString()
+        .trim()
+        .custom((value) => {
+            if (value && value !== 'en.sahih') {
+                throw new Error('Only "en.sahih" translation edition is currently supported.');
+            }
+            return true;
+        }),
+
+    body('text_mode')
+        .optional()
+        .isIn(['bilingual', 'arabic_only'])
+        .withMessage('Text mode must be either "bilingual" or "arabic_only"'),
+
+    body('plan_hash')
+        .optional()
+        .isString()
         .trim(),
+
+    body('timing_overrides')
+        .optional()
+        .isObject()
+        .withMessage('timing_overrides must be an object'),
 
     body('platform')
         .optional()
@@ -125,6 +155,124 @@ export const validateSubscription = [
         .isString()
         .notEmpty()
         .withMessage('auth key is required'),
+
+    validate,
+];
+
+/**
+ * Verse search query validation
+ */
+export const validateSearchQuery = [
+    query('q')
+        .isString()
+        .trim()
+        .notEmpty()
+        .withMessage('Search query "q" is required and cannot be empty'),
+
+    query('surah')
+        .optional()
+        .isInt({ min: 1, max: 114 })
+        .withMessage('Surah must be between 1 and 114'),
+
+    query('page')
+        .optional()
+        .isInt({ min: 1 })
+        .withMessage('Page must be a positive integer'),
+
+    query('limit')
+        .optional()
+        .isInt({ min: 1, max: 50 })
+        .withMessage('Limit must be between 1 and 50'),
+
+    validate,
+];
+
+/**
+ * Verse range review query validation
+ */
+export const validateVersesQuery = [
+    query('surah')
+        .isInt({ min: 1, max: 114 })
+        .withMessage('Surah must be between 1 and 114'),
+
+    query('start')
+        .optional()
+        .isInt({ min: 1 })
+        .withMessage('Start Ayah must be at least 1'),
+
+    query('end')
+        .optional()
+        .isInt({ min: 1 })
+        .withMessage('End Ayah must be at least 1')
+        .custom((value, { req }) => {
+            const surah = req.query.surah;
+            const start = req.query.start || 1;
+            const end = value || start;
+            const rangeVal = quranRepository.validateRange(surah, start, end);
+            if (!rangeVal.valid) {
+                throw new Error(rangeVal.error);
+            }
+            return true;
+        }),
+
+    validate,
+];
+
+/**
+ * Render plan request validation
+ */
+export const validatePlanRequest = [
+    body('surah')
+        .isInt({ min: 1, max: 114 })
+        .withMessage('Surah must be between 1 and 114'),
+
+    body('ayah_start')
+        .optional()
+        .isInt({ min: 1 })
+        .withMessage('Start Ayah must be at least 1'),
+
+    body('ayahStart')
+        .optional()
+        .isInt({ min: 1 }),
+
+    body('ayah_end')
+        .optional()
+        .isInt({ min: 1 })
+        .withMessage('End Ayah must be at least 1'),
+
+    body('ayahEnd')
+        .optional()
+        .isInt({ min: 1 }),
+
+    body().custom((body) => {
+        const surah = body.surah;
+        const start = body.ayah_start || body.ayahStart || 1;
+        const end = body.ayah_end || body.ayahEnd || start;
+        const rangeVal = quranRepository.validateRange(surah, start, end);
+        if (!rangeVal.valid) {
+            throw new Error(rangeVal.error);
+        }
+        return true;
+    }),
+
+    body('platform')
+        .optional()
+        .isIn(['reel', 'youtube'])
+        .withMessage('Platform must be either "reel" or "youtube"'),
+
+    body('resolution')
+        .optional()
+        .isInt({ min: 360, max: 1080 })
+        .withMessage('Resolution must be between 360 and 1080'),
+
+    body('text_mode')
+        .optional()
+        .isIn(['bilingual', 'arabic_only'])
+        .withMessage('Text mode must be either "bilingual" or "arabic_only"'),
+
+    body('textMode')
+        .optional()
+        .isIn(['bilingual', 'arabic_only']),
 
     validate,
 ];

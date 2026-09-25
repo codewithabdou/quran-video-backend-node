@@ -7,6 +7,7 @@ jest.unstable_mockModule('../../services/videoService.js', () => ({
     subscribeToProgress: jest.fn(),
     checkJobResult: jest.fn(),
     coreGenerationLogic: jest.fn(),
+    getMediaDuration: jest.fn().mockResolvedValue(5),
 }));
 
 jest.unstable_mockModule('../../config/queue.js', () => ({
@@ -34,10 +35,14 @@ const {
     subscribe: subscribeEndpoint, 
     cancelVideoEndpoint,
     getAdminJobsEndpoint,
-    cancelAdminJobEndpoint
+    cancelAdminJobEndpoint,
+    getVideoPlanEndpoint,
+    getPreviewFrameEndpoint,
+    getVideoPreflightEndpoint,
 } = await import('../videoController.js');
 const videoService = await import('../../services/videoService.js');
 const { getActiveJob, videoQueue } = await import('../../config/queue.js');
+
 
 describe('Video Controller', () => {
     let req, res;
@@ -57,7 +62,9 @@ describe('Video Controller', () => {
         res = {
             status: jest.fn().mockReturnThis(),
             json: jest.fn(),
-            download: jest.fn()
+            download: jest.fn(),
+            set: jest.fn().mockReturnThis(),
+            send: jest.fn(),
         };
         jest.clearAllMocks();
     });
@@ -184,4 +191,49 @@ describe('Video Controller', () => {
             expect(res.status).toHaveBeenCalledWith(200);
         });
     });
+
+    describe('Preview & Plan Endpoints', () => {
+        test('getVideoPlanEndpoint should return a deterministic render plan', async () => {
+            req.body = {
+                surah: 1,
+                ayah_start: 1,
+                ayah_end: 2,
+                platform: 'reel',
+                resolution: 720,
+            };
+
+            await getVideoPlanEndpoint(req, res, jest.fn());
+
+            expect(res.json).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    status: 'success',
+                    data: expect.objectContaining({
+                        plan: expect.objectContaining({
+                            planVersion: 1,
+                            screens: expect.any(Array),
+                        }),
+                    }),
+                })
+            );
+        });
+
+        test('getPreviewFrameEndpoint should return image/png buffer', async () => {
+            req.body = {
+                surah: 1,
+                ayah: 1,
+                platform: 'reel',
+                resolution: 720,
+            };
+
+            await getPreviewFrameEndpoint(req, res, jest.fn());
+
+            expect(res.set).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    'Content-Type': 'image/png',
+                })
+            );
+            expect(res.send).toHaveBeenCalled();
+        });
+    });
 });
+

@@ -1,12 +1,29 @@
 import express from 'express';
-import { generateVideoEndpoint, getProgressStream, subscribe, downloadVideoEndpoint, uploadBackground, checkBackground, cancelVideoEndpoint } from '../controllers/videoController.js';
+import {
+    generateVideoEndpoint,
+    getProgressStream,
+    subscribe,
+    downloadVideoEndpoint,
+    uploadBackground,
+    checkBackground,
+    cancelVideoEndpoint,
+    getVideoPlanEndpoint,
+    getPreviewFrameEndpoint,
+    getVideoPreflightEndpoint,
+} from '../controllers/videoController.js';
 import { videoGenerationLimiter } from '../middleware/rateLimiter.js';
-import { validateVideoRequest, validateRequestId, validateSubscription } from '../middleware/validation.js';
+import {
+    validateVideoRequest,
+    validateRequestId,
+    validateSubscription,
+    validatePlanRequest,
+} from '../middleware/validation.js';
 import { upload } from '../middleware/upload.js';
 import { concurrencyLimiter } from '../middleware/concurrencyLimiter.js';
 import { requireAuth, optionalAuth } from '../middleware/auth.js';
 
 const router = express.Router();
+
 
 /**
  * @swagger
@@ -96,7 +113,74 @@ const router = express.Router();
  *       500:
  *         description: Server error
  */
+/**
+ * @swagger
+ * /video/plan:
+ *   post:
+ *     summary: Generate a deterministic video render plan with safe-zone layouts and multi-screen pagination
+ *     tags: [Generator]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - surah
+ *               - ayah_start
+ *               - ayah_end
+ *             properties:
+ *               surah:
+ *                 type: integer
+ *               ayah_start:
+ *                 type: integer
+ *               ayah_end:
+ *                 type: integer
+ *               platform:
+ *                 type: string
+ *                 enum: [reel, youtube]
+ *               resolution:
+ *                 type: integer
+ *               text_mode:
+ *                 type: string
+ *                 enum: [bilingual, arabic_only]
+ *     responses:
+ *       200:
+ *         description: Render plan with screens, layout fits, warnings, and planHash
+ */
+router.post('/video/plan', validatePlanRequest, getVideoPlanEndpoint);
+
+/**
+ * @swagger
+ * /video/preview-frame:
+ *   post:
+ *     summary: Render a single planned screen to a transparent PNG
+ *     tags: [Generator]
+ *     responses:
+ *       200:
+ *         description: Transparent PNG image
+ *         content:
+ *           image/png:
+ *             schema:
+ *               type: string
+ *               format: binary
+ */
+router.post('/video/preview-frame', getPreviewFrameEndpoint);
+
+/**
+ * @swagger
+ * /video/preflight:
+ *   post:
+ *     summary: Resolve audio durations via FFprobe and compute timed render plan
+ *     tags: [Generator]
+ *     responses:
+ *       200:
+ *         description: Timed render plan with audio distribution and total video duration
+ */
+router.post('/video/preflight', validatePlanRequest, getVideoPreflightEndpoint);
+
 router.post('/generate-video', requireAuth, videoGenerationLimiter, concurrencyLimiter, validateVideoRequest, generateVideoEndpoint);
+
 
 /**
  * @swagger

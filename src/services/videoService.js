@@ -13,7 +13,10 @@ import fs from 'fs';
 import path from 'path';
 import { downloadFile, cleanupTempDir } from '../utils/fileOps.js';
 import { createSubtitleImage, createOutroImage } from '../utils/textGen.js';
+import { buildRenderPlan, distributeAudioDurations, renderScreenToBuffer } from './renderPlan.js';
+import quranRepository from './quranRepository.js';
 import webPush from 'web-push';
+
 import dotenv from 'dotenv';
 import { videoQueue, getProgressData, setProgress, deleteProgress, getJobResult, getQueuePosition, setActiveJob, getActiveJob, checkUserRateLimit, incrementUserGenerationCount } from '../config/queue.js';
 
@@ -231,39 +234,34 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
 
     try {
-        // 1. Fetch Quran Data (Local with dynamic fallback)
+        // 1. Build and verify Render Plan
         await updateProgress(10, 'status_fetching');
+        const plan = buildRenderPlan({
+            surah: parseInt(surah, 10),
+            ayahStart: parseInt(ayah_start, 10),
+            ayahEnd: parseInt(ayah_end, 10),
+            platform,
+            resolution: parseInt(resolution, 10) || 720,
+            textMode: data.text_mode || 'bilingual',
+            reciterId: reciter_id,
+            timingOverrides: data.timing_overrides || {},
+        });
+
         const dataDir = path.join(process.cwd(), 'data');
-        const { arabicPath, englishPath } = await ensureQuranData();
-
-        const arabicData = JSON.parse(fs.readFileSync(arabicPath, 'utf8'));
-        const englishData = JSON.parse(fs.readFileSync(englishPath, 'utf8'));
-
-        const arabicSurah = arabicData.surahs.find(s => s.number === parseInt(surah));
-        const englishSurah = englishData.surahs.find(s => s.number === parseInt(surah));
-
-        if (!arabicSurah || !englishSurah) {
-            throw new Error("Surah not found in local data");
-        }
-
-        const ayahs = [];
-        for (let i = 0; i < arabicSurah.ayahs.length; i++) {
-            const num = arabicSurah.ayahs[i].numberInSurah;
-            if (num >= ayah_start && num <= ayah_end) {
-                // Compute local audio path: data/audio/[reciter_id]/[surah][ayah].mp3
-                const audioFilename = `${String(surah).padStart(3, '0')}${String(num).padStart(3, '0')}.mp3`;
-                const audioLocalPath = path.join(dataDir, 'audio', reciter_id, audioFilename);
-                const audioFallbackUrl = `https://everyayah.com/data/${reciter_id}/${audioFilename}`;
-                
-                ayahs.push({
-                    number: num,
-                    arabic: arabicSurah.ayahs[i].text,
-                    english: englishSurah.ayahs[i].text,
-                    audioPath: audioLocalPath,
-                    audioFallbackUrl: audioFallbackUrl
-                });
-            }
-        }
+        const rawAyahs = quranRepository.getAyahRange(surah, ayah_start, ayah_end);
+        const ayahs = rawAyahs.map(a => {
+            const num = a.numberInSurah;
+            const audioFilename = `${String(surah).padStart(3, '0')}${String(num).padStart(3, '0')}.mp3`;
+            const audioLocalPath = path.join(dataDir, 'audio', reciter_id, audioFilename);
+            const audioFallbackUrl = `https://everyayah.com/data/${reciter_id}/${audioFilename}`;
+            return {
+                number: num,
+                arabic: a.arabic,
+                english: a.english,
+                audioPath: audioLocalPath,
+                audioFallbackUrl,
+            };
+        });
 
         console.log(`[VideoService] Preparing background: ${background_url || 'default'}`);
         // 2. Prepare Background
@@ -309,11 +307,11 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
         }
 
         const audioPaths = [];
-        const subtitleImages = [];
+        const ayahDurations = {};
         let totalDuration = 0;
         console.log(`[VideoService] Processing ${ayahs.length} ayahs...`);
 
-        const requestedRes = parseInt(resolution);
+        const requestedRes = parseInt(resolution, 10) || 720;
         let width, height;
         
         if (platform === 'reel') {
@@ -360,34 +358,54 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
 
             ayah.duration = await getMediaDuration(ayah.audioPath);
             console.log(`[VideoService] Ayah ${ayah.number} duration: ${ayah.duration}s`);
-            
             ayah.startTime = totalDuration;
+            ayahDurations[ayah.number] = ayah.duration;
             totalDuration += ayah.duration;
+            audioPaths.push(ayah.audioPath);
 
             if (totalDuration > MAX_DURATION) {
                 throw new Error(`error_duration_limit|${Math.floor(totalDuration)}`);
             }
-
-            const subFilename = `sub_${ayah.number}.png`;
-            const subPath = path.join(tempDir, subFilename);
-            const baseSize = Math.min(width, height);
-            
-            await createSubtitleImage(ayah.arabic, ayah.english, subPath, {
-                width: width,
-                height: height,
-                arabicFontPath: path.join(process.cwd(), 'fonts/Nabi.ttf'),
-                englishFontPath: path.join(process.cwd(), 'fonts/arial.ttf'),
-                arabicFontSize: baseSize * 0.08,
-                englishFontSize: baseSize * 0.045
-            });
-            ayah.subPath = subPath;
-
-            audioPaths.push(ayah.audioPath);
-            subtitleImages.push({ path: ayah.subPath, start: ayah.startTime, end: ayah.startTime + ayah.duration });
         }
 
+        // Distribute audio durations across planned screens
+        const timedPlan = distributeAudioDurations(plan, ayahDurations, data.timing_overrides || {});
+
+        // Strict Plan Hash Verification (if provided by client)
+        // Accepts either the initial layout planHash or the finalized timedPlan planHash
+        if (data.plan_hash && data.plan_hash !== plan.planHash && data.plan_hash !== timedPlan.planHash) {
+            console.warn(`[VideoService] Plan hash mismatch: client provided ${data.plan_hash}, expected initial ${plan.planHash} or timed ${timedPlan.planHash}`);
+            const err = new Error('Plan changed or expired. Please refresh preview.');
+            err.code = 'PLAN_CHANGED';
+            err.status = 409;
+            throw err;
+        }
+
+        const subtitleImages = [];
+
+        await updateProgress(40, 'status_subtitles');
+        for (const screen of timedPlan.screens) {
+            const subFilename = `sub_${screen.id.replace(/:/g, '_')}.png`;
+            const subPath = path.join(tempDir, subFilename);
+
+            const subBuffer = await renderScreenToBuffer(screen, {
+                width,
+                height,
+                platform,
+                resolution: requestedRes,
+            });
+            fs.writeFileSync(subPath, subBuffer);
+
+            subtitleImages.push({
+                path: subPath,
+                start: screen.startMs / 1000,
+                end: screen.endMs / 1000,
+            });
+        }
+
+
         // 2.5 Generate Outro Assets
-        // Use local outro audio: Surah Muzammil (73), Ayah 4
+        // Use local outro audio: Surah Muzammil (73), Ayah 4 (global ayah #5479)
         const localOutroAudioPath = path.join(dataDir, 'audio', reciter_id, '073004.mp3');
         let hasOutroAudio = false;
         let outroDuration = 5;
@@ -396,7 +414,7 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
              console.log(`[Cache Miss] Local outro audio missing (Surah 73:4). Fetching official URL...`);
              try {
                 const outroRes = await axios.get(`http://api.alquran.cloud/v1/ayah/73:4/${reciter_id}`);
-                const officialOutroUrl = outroRes.data.data.audio;
+                const officialOutroUrl = outroRes.data?.data?.audio;
                 
                 if (officialOutroUrl) {
                     const targetDir = path.dirname(localOutroAudioPath);
@@ -407,7 +425,20 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
                     await downloadFile(officialOutroUrl, localOutroAudioPath);
                 }
              } catch (error) {
-                console.warn(`[VideoService] Outro audio fallback failed: ${error.message}. Proceeding without outro audio.`);
+                // Secondary fallback: cdn.islamic.network
+                const OUTRO_AYAH_GLOBAL = 5479;
+                const fallbackUrl = `https://cdn.islamic.network/quran/audio/128/${reciter_id}/${OUTRO_AYAH_GLOBAL}.mp3`;
+                try {
+                    const targetDir = path.dirname(localOutroAudioPath);
+                    if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+                    await downloadFile(fallbackUrl, localOutroAudioPath);
+                    console.log(`[Outro] Successfully downloaded outro audio from CDN fallback`);
+                } catch (outroDownloadErr) {
+                    console.warn(`[VideoService] Outro audio fallback failed: ${error.message}. Proceeding without outro audio.`);
+                    if (fs.existsSync(localOutroAudioPath)) {
+                        try { fs.unlinkSync(localOutroAudioPath); } catch (_) {}
+                    }
+                }
              }
         }
 
@@ -587,7 +618,7 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
     }
 };
 
-const getMediaDuration = (path) => {
+export const getMediaDuration = (path) => {
     return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
             reject(new Error(`ffprobe timeout for ${path}`));
@@ -600,3 +631,4 @@ const getMediaDuration = (path) => {
         });
     });
 };
+

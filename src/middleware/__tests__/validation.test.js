@@ -1,6 +1,13 @@
 import { jest } from '@jest/globals';
 
-const { validateVideoRequest, validateRequestId, validateSubscription } = await import('../validation.js');
+const {
+    validateVideoRequest,
+    validateRequestId,
+    validateSubscription,
+    validateSearchQuery,
+    validateVersesQuery,
+    validatePlanRequest,
+} = await import('../validation.js');
 
 describe('Validation Middleware', () => {
     let req, res, next;
@@ -9,6 +16,7 @@ describe('Validation Middleware', () => {
         req = {
             body: {},
             params: {},
+            query: {},
         };
         res = {
             status: jest.fn().mockReturnThis(),
@@ -17,14 +25,6 @@ describe('Validation Middleware', () => {
         next = jest.fn();
     });
 
-    // Helper to simulate express-validator flow
-    // Since we are unit testing the middleware layers, we'd ideally use supertest or mock express-validator
-    // But we can also test the logic by passing mock objects that express-validator expects.
-    // However, testing express-validator middlewares directly in unit tests without a real express app is tricky
-    // because it relies on the internal state of the request object.
-    
-    // For now, let's test a couple of cases and see if they work with the existing setup.
-    
     describe('validateVideoRequest', () => {
         it('should be an array of middlewares', () => {
             expect(Array.isArray(validateVideoRequest)).toBe(true);
@@ -43,4 +43,23 @@ describe('Validation Middleware', () => {
             expect(Array.isArray(validateSubscription)).toBe(true);
         });
     });
+
+    describe('validateSearchQuery', () => {
+        it('should be an array of middlewares', () => {
+            expect(Array.isArray(validateSearchQuery)).toBe(true);
+        });
+    });
+
+    describe('validateVersesQuery', () => {
+        it('should be an array of middlewares', () => {
+            expect(Array.isArray(validateVersesQuery)).toBe(true);
+        });
+    });
+
+    describe('validatePlanRequest', () => {
+        it('should be an array of middlewares', () => {
+            expect(Array.isArray(validatePlanRequest)).toBe(true);
+        });
+    });
 });
+

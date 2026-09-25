@@ -1,13 +1,28 @@
 node_modules
 npm-debug.log
-temp
+.env
+.env.*
+!.env.example
+.git
+.git/
+
+# Runtime Data
+temp/
 uploads/*
 !uploads/.gitkeep
 outputs/*
 !outputs/.gitkeep
-.env
-.env.production
-.git
+logs/
+*.log
+data/audio/
+
+# Testing
+coverage/
+
+# Misc
+.DS_Store
+.vscode/
+Thumbs.db
 .gitignore
 Dockerfile
 docker-compose.yml
