@@ -15,6 +15,7 @@ import { downloadFile, cleanupTempDir } from '../utils/fileOps.js';
 import { createSubtitleImage, createOutroImage } from '../utils/textGen.js';
 import { buildRenderPlan, distributeAudioDurations, renderScreenToBuffer } from './renderPlan.js';
 import quranRepository from './quranRepository.js';
+import { getEveryAyahReciterFolder } from '../constants/reciters.js';
 import webPush from 'web-push';
 
 import dotenv from 'dotenv';
@@ -249,17 +250,21 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
 
         const dataDir = path.join(process.cwd(), 'data');
         const rawAyahs = quranRepository.getAyahRange(surah, ayah_start, ayah_end);
+        const reciterFolder = getEveryAyahReciterFolder(reciter_id);
         const ayahs = rawAyahs.map(a => {
             const num = a.numberInSurah;
             const audioFilename = `${String(surah).padStart(3, '0')}${String(num).padStart(3, '0')}.mp3`;
             const audioLocalPath = path.join(dataDir, 'audio', reciter_id, audioFilename);
-            const audioFallbackUrl = `https://everyayah.com/data/${reciter_id}/${audioFilename}`;
+            const audioFallbackUrl = `https://everyayah.com/data/${reciterFolder}/${audioFilename}`;
+            const secondaryFallbackUrl = `https://cdn.islamic.network/quran/audio/128/${reciter_id}/${a.number}.mp3`;
             return {
                 number: num,
+                globalNumber: a.number,
                 arabic: a.arabic,
                 english: a.english,
                 audioPath: audioLocalPath,
                 audioFallbackUrl,
+                secondaryFallbackUrl,
             };
         });
 
@@ -330,28 +335,43 @@ export const coreGenerationLogic = async (data, requestId, updateProgress, abort
         const MAX_DURATION = 180; // 3 minutes
         for (const ayah of ayahs) {
             if (!fs.existsSync(ayah.audioPath)) {
-                // Cache miss - fetch official URL from AlQuran.cloud API
-                console.log(`[Cache Miss] Local audio missing for Ayah ${surah}:${ayah.number}. Fetching official URL...`);
+                console.log(`[VideoService] Local audio missing for Ayah ${surah}:${ayah.number}. Downloading...`);
                 
+                const targetDir = path.dirname(ayah.audioPath);
+                if (!fs.existsSync(targetDir)) {
+                    fs.mkdirSync(targetDir, { recursive: true });
+                }
+
+                let dlSuccess = false;
                 try {
-                    const ayahRes = await axios.get(`http://api.alquran.cloud/v1/ayah/${surah}:${ayah.number}/${reciter_id}`);
-                    const officialAudioUrl = ayahRes.data.data.audio;
-                    
-                    if (!officialAudioUrl) throw new Error("No audio URL returned from API");
+                    dlSuccess = await downloadFile(ayah.audioFallbackUrl, ayah.audioPath);
+                } catch (dlErr) {
+                    console.warn(`[VideoService] EveryAyah download failed for Ayah ${ayah.number}: ${dlErr.message}. Trying CDN...`);
+                }
 
-                    // Ensure the directory exists first
-                    const targetDir = path.dirname(ayah.audioPath);
-                    if (!fs.existsSync(targetDir)) {
-                        fs.mkdirSync(targetDir, { recursive: true });
+                if (!dlSuccess || !fs.existsSync(ayah.audioPath)) {
+                    if (ayah.secondaryFallbackUrl) {
+                        try {
+                            console.log(`[VideoService] Downloading from CDN fallback: ${ayah.secondaryFallbackUrl}`);
+                            dlSuccess = await downloadFile(ayah.secondaryFallbackUrl, ayah.audioPath);
+                        } catch (cdnErr) {
+                            console.error(`[VideoService] CDN fallback also failed: ${cdnErr.message}`);
+                        }
                     }
+                }
 
-                    console.log(`[VideoService] Downloading audio from: ${officialAudioUrl}`);
-                    const dlSuccess = await downloadFile(officialAudioUrl, ayah.audioPath);
-                    if (!dlSuccess || !fs.existsSync(ayah.audioPath)) {
-                        throw new Error(`Failed to download audio from ${officialAudioUrl}`);
-                    }
-                } catch (error) {
-                    console.error(`[VideoService] Audio fallback failed: ${error.message}`);
+                if (!dlSuccess || !fs.existsSync(ayah.audioPath)) {
+                    // Try AlQuran cloud API as last resort
+                    try {
+                        const ayahRes = await axios.get(`https://api.alquran.cloud/v1/ayah/${surah}:${ayah.number}/${reciter_id}`);
+                        const officialAudioUrl = ayahRes.data?.data?.audio;
+                        if (officialAudioUrl) {
+                            dlSuccess = await downloadFile(officialAudioUrl, ayah.audioPath);
+                        }
+                    } catch (_) {}
+                }
+
+                if (!dlSuccess || !fs.existsSync(ayah.audioPath)) {
                     throw new Error(`Could not fetch audio for Ayah ${surah}:${ayah.number}. Please check your connection or reciter ID.`);
                 }
             }

@@ -75,6 +75,7 @@ const worker = new Worker(
         // Check if this job was cancelled while waiting in queue
         if (await isCancelled(requestId)) {
             console.log(`[Worker] Job ${requestId} was cancelled before processing started. Skipping.`);
+            if (userId) await clearActiveJob(userId);
             if (clientIp) await clearActiveJob(clientIp);
             await saveGenerationHistory(requestData, requestId, userId, 'cancelled', startTime);
             return { status: 'cancelled' };
@@ -109,6 +110,7 @@ const worker = new Worker(
                         console.error(`[Worker] Failed to delete cancelled output:`, e.message);
                     }
                 }
+                if (userId) await clearActiveJob(userId);
                 if (clientIp) await clearActiveJob(clientIp);
                 activeControllers.delete(requestId);
                 await saveGenerationHistory(requestData, requestId, userId, 'cancelled', startTime);
@@ -119,11 +121,10 @@ const worker = new Worker(
             await setJobResult(requestId, result.path);
             await updateProgress(100, 'status_completed');
 
-            // Release the IP concurrency lock
-            if (clientIp) {
-                await clearActiveJob(clientIp);
-                console.log(`[Worker] Released concurrency lock for IP: ${clientIp}`);
-            }
+            // Release the concurrency lock (both userId and IP)
+            if (userId) await clearActiveJob(userId);
+            if (clientIp) await clearActiveJob(clientIp);
+            console.log(`[Worker] Released concurrency lock for User: ${userId}, IP: ${clientIp}`);
 
             activeControllers.delete(requestId);
             console.log(`[Worker] Job ${job.id} completed. Output: ${result.path}`);
@@ -148,9 +149,9 @@ const worker = new Worker(
                         console.error(`[Worker] Failed to delete partial output:`, e.message);
                     }
                 }
-                if (clientIp) {
-                    console.log(`[Worker] Released concurrency lock for IP (cancelled): ${clientIp}`);
-                }
+                if (userId) await clearActiveJob(userId);
+                if (clientIp) await clearActiveJob(clientIp);
+                console.log(`[Worker] Released concurrency lock (cancelled) for User: ${userId}, IP: ${clientIp}`);
                 await saveGenerationHistory(requestData, requestId, userId, 'cancelled', startTime);
                 // Return gracefully instead of throwing so BullMQ doesn't mark as "failed"
                 return { status: 'cancelled' };
@@ -159,11 +160,10 @@ const worker = new Worker(
             console.error(`[Worker] Job ${job.id} failed:`, error.message);
             await setProgress(requestId, { error: error.message, status: 'failed' });
 
-            // Release the IP concurrency lock even on failure
-            if (clientIp) {
-                await clearActiveJob(clientIp);
-                console.log(`[Worker] Released concurrency lock for IP (failed): ${clientIp}`);
-            }
+            // Release the concurrency lock even on failure
+            if (userId) await clearActiveJob(userId);
+            if (clientIp) await clearActiveJob(clientIp);
+            console.log(`[Worker] Released concurrency lock for User (failed): ${userId}, IP: ${clientIp}`);
 
             // Save failed generation to history
             await saveGenerationHistory(requestData, requestId, userId, 'failed', startTime);

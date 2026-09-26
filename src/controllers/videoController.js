@@ -3,6 +3,8 @@ import { buildRenderPlan, distributeAudioDurations, renderScreenToBuffer } from 
 import { getActiveJob, clearActiveJob, deleteProgress, videoQueue, setCancelled, setProgress } from '../config/queue.js';
 import { abortJob } from '../worker.js';
 import { downloadFile } from '../utils/fileOps.js';
+import { getEveryAyahReciterFolder } from '../constants/reciters.js';
+import quranRepository from '../services/quranRepository.js';
 import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
@@ -78,6 +80,11 @@ const cancelJobById = async (activeJobId, explicitLockKey = null) => {
     if (lockKey) {
         await clearActiveJob(lockKey);
     }
+    try {
+        const job = await videoQueue.getJob(activeJobId);
+        if (job?.data?.userId) await clearActiveJob(job.data.userId);
+        if (job?.data?.clientIp) await clearActiveJob(job.data.clientIp);
+    } catch (_) {}
 
     // 3. Set progress to 'cancelled' so the SSE stream notifies the frontend
     await setProgress(activeJobId, { status: 'cancelled', percentage: 0 });
@@ -471,14 +478,33 @@ export const getVideoPreflightEndpoint = async (req, res, next) => {
         for (let a = start; a <= end; a++) {
             const audioFilename = `${String(surahNum).padStart(3, '0')}${String(a).padStart(3, '0')}.mp3`;
             const audioLocalPath = path.join(dataDir, 'audio', effectiveReciter, audioFilename);
-            const audioFallbackUrl = `https://everyayah.com/data/${effectiveReciter}/${audioFilename}`;
+            const reciterFolder = getEveryAyahReciterFolder(effectiveReciter);
+            const audioFallbackUrl = `https://everyayah.com/data/${reciterFolder}/${audioFilename}`;
 
             if (!fs.existsSync(audioLocalPath)) {
                 const targetDir = path.dirname(audioLocalPath);
                 if (!fs.existsSync(targetDir)) {
                     fs.mkdirSync(targetDir, { recursive: true });
                 }
-                const downloaded = await downloadFile(audioFallbackUrl, audioLocalPath);
+                let downloaded = false;
+                try {
+                    downloaded = await downloadFile(audioFallbackUrl, audioLocalPath);
+                } catch (dlErr) {
+                    console.warn(`[Preflight] EveryAyah download failed for ${effectiveReciter} Ayah ${a}:`, dlErr.message);
+                }
+                if (!downloaded || !fs.existsSync(audioLocalPath)) {
+                    // Fallback to Islamic Network CDN using global ayah number
+                    const ayahRecord = quranRepository.getAyah(surahNum, a);
+                    if (ayahRecord?.number) {
+                        const cdnUrl = `https://cdn.islamic.network/quran/audio/128/${effectiveReciter}/${ayahRecord.number}.mp3`;
+                        console.log(`[Preflight] Attempting CDN fallback for Ayah ${a}: ${cdnUrl}`);
+                        try {
+                            downloaded = await downloadFile(cdnUrl, audioLocalPath);
+                        } catch (cdnErr) {
+                            console.error(`[Preflight] CDN fallback failed for Ayah ${a}:`, cdnErr.message);
+                        }
+                    }
+                }
                 if (!downloaded || !fs.existsSync(audioLocalPath)) {
                     throw new Error(`Failed to download audio for Ayah ${a}`);
                 }
